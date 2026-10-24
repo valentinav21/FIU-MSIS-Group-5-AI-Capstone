@@ -21,9 +21,7 @@ def bp2_page(file, title, icon):
 
     def tbd():
         st.title(f"{title} (TBD)")
-        st.info("**To be determined.** Group 5 is tackling **BP1 Purchasing** for the capstone. "
-                "BP2 Sales growth is out of scope for now, so this page is turned off.")
-        st.caption("To turn BP2 back on, set features: bp2_enabled: true in config/settings.yaml and run the analysis again.")
+        st.info("**To be determined.**")
 
     tbd.__name__ = "tbd_" + Path(file).stem
     return st.Page(tbd, title=f"{title} (TBD)", icon=":material/block:", url_path=Path(file).stem)
