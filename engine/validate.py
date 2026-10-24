@@ -95,7 +95,7 @@ def run_checks(res, settings) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def module_readiness(res) -> pd.DataFrame:
+def module_readiness(res, settings=None) -> pd.DataFrame:
     h = res.has
     mods = [
         ("Demand forecast", h("sales"), "sales"),
@@ -110,4 +110,8 @@ def module_readiness(res) -> pd.DataFrame:
         ("Pricing", h("sales") and res.tables.get("sales") is not None and (res.tables["sales"]["unit_price"].notna().any() or res.tables["sales"]["line_total"].notna().any()), "sales with price"),
         ("Unmet web demand", h("web_searches"), "web_searches (FocusPoint)"),
     ]
-    return pd.DataFrame([{"Module": m, "Ready": "Yes" if ok else "No", "Needs": need} for m, ok, need in mods])
+    bp2 = bool((settings or {}).get("features", {}).get("bp2_enabled", False))
+    bp2_mods = {"Customer segments and churn", "Cross-sell and upsell", "Markets and geography", "Pricing", "Unmet web demand"}
+    return pd.DataFrame([{"Module": m + (" (BP2, TBD)" if m in bp2_mods and not bp2 else ""),
+                          "Ready": ("TBD" if m in bp2_mods and not bp2 else ("Yes" if ok else "No")), "Needs": need}
+                         for m, ok, need in mods])

@@ -108,7 +108,9 @@ def test_excel_workbook_with_named_sheets(tmp_path, small):
 # ------------------------------------------------------------------ end to end
 
 def test_full_pipeline_small(small):
-    res = pipeline.run(small, fast_settings(), save=False)
+    st = fast_settings()
+    st["features"]["bp2_enabled"] = True  # keep the BP2 code tested even while it is turned off in the app
+    res = pipeline.run(small, st, save=False)
     assert not res.errors, res.errors
     assert len(res.forecast_table) > 0 and len(res.policy) == len(res.forecast_table)
     assert res.policy["reorder_point"].ge(0).all()
@@ -146,7 +148,8 @@ def test_monthly_bucket_and_no_customers(tmp_path, small):
     assert not res.errors, res.errors
     assert res.period_days > 28
     assert len(res.policy)
-    assert res.sales is not None and len(res.sales.customers) == 0
+    assert res.sales is None  # BP2 is off by default (TBD)
+    assert (res.readiness["Ready"] == "TBD").any()
 
 
 def test_settings_roundtrip(tmp_path):

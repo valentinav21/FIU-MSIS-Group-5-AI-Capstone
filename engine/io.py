@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = ROOT / "config" / "settings.yaml"
 
 DEFAULTS = {
+    "features": {"bp2_enabled": False},
     "data": {"folder": "data/my_data", "net_returns_from_demand": False, "as_of_date": "", "history_start": "",
              "default_warehouse": "MIA", "currency": "USD"},
     "forecast": {"bucket": "W", "horizon_periods": 26, "backtest_origins": 4, "backtest_horizon": 8,

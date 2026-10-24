@@ -33,6 +33,8 @@ st.markdown("""
 8. **Proves itself** by checking its predictions for today's SAP settings against a replay of real history, then replaying last year
    through the new settings.
 
+**Sales growth (problem statement 2): TBD.** Group 5 is tackling BP1 for the capstone, so these pages are turned off (set `features: bp2_enabled: true` in config/settings.yaml to turn them back on). When on, they offer:
+
 **Sales growth (problem statement 2)**
 
 Customer segments (RFM), buying personas, a churn model tested on a later period, cross-sell suggestions (the recommender is chosen on

@@ -6,7 +6,8 @@ It answers both problem statements FORTPRO submitted:
 * **BP1 Purchasing:** intermittent demand forecasting, dynamic safety stock and reorder points, 1 to 8 week
   stockout and overstock warnings with root causes, explainable multi-supplier purchase order recommendations
   exported as SAP Business One drafts, and supplier lead time scorecards.
-* **BP2 Sales growth:** customer segments and personas, churn risk, cross-sell and kit suggestions, wallet share
+* **BP2 Sales growth (TBD):** turned off for now, since Group 5 is tackling BP1. Set `features: bp2_enabled: true`
+  in `config/settings.yaml` to turn it back on. When on: customer segments and personas, churn risk, cross-sell and kit suggestions, wallet share
   gaps, geographic opportunity, price leakage and price sensitivity, product trends, unmet web demand, and one
   ranked list of sales plays.
 

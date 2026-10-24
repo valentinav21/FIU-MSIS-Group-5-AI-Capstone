@@ -1,6 +1,10 @@
 # FORTPRO AI Planner settings
 # Edit here or on the Settings page in the app. Every value has a safe default.
 
+features:
+  # The group is tackling BP1 (purchasing). BP2 (sales growth) pages show as TBD until this is true.
+  bp2_enabled: false
+
 data:
   # Folder that holds your exported CSV or Excel files (relative to the app folder or absolute)
   folder: data/my_data

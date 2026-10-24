@@ -13,7 +13,7 @@ from engine import io as eio  # noqa: E402
 from engine import pipeline, report  # noqa: E402
 
 page_setup("FORTPRO AI Planner")
-st.markdown('<p class="fp-note">Purchasing and sales growth for World Truck Parts, built for SAP Business One exports. '
+st.markdown('<p class="fp-note">Purchasing planning (BP1) for World Truck Parts, built for SAP Business One exports. Sales growth (BP2) is TBD. '
             'Every number below is computed on this computer from the files you load.</p>', unsafe_allow_html=True)
 
 cfg = settings()

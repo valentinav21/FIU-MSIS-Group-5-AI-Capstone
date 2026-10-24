@@ -84,7 +84,7 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
         progress(0.01, "Loading files")
     load = io.load_folder(folder, settings)
     res.health = validate.run_checks(load, settings)
-    res.readiness = validate.module_readiness(load)
+    res.readiness = validate.module_readiness(load, settings)
     res.mapping = pd.DataFrame(load.mapping, columns=["Table", "File", "Your column", "Mapped to"])
     if not load.has("sales"):
         res.errors.append("No sales file could be loaded. Nothing else can run without it.")
@@ -189,8 +189,10 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
             res.replay = Rp
 
     stock_by_item = tables["stock"].groupby("item_code")["on_hand"].sum() if load.has("stock") else None
-    S = _step(res, "Analysing customers and sales growth",
-              lambda: sales.run(tables, P.items, settings, P.as_of, stock_by_item), progress, 0.86)
+    S = None
+    if settings.get("features", {}).get("bp2_enabled", False):
+        S = _step(res, "Analysing customers and sales growth",
+                  lambda: sales.run(tables, P.items, settings, P.as_of, stock_by_item), progress, 0.86)
     if S is not None:
         res.sales = S
         res.notes += S.notes
