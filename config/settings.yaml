@@ -1,0 +1,65 @@
+# FORTPRO AI Planner settings
+# Edit here or on the Settings page in the app. Every value has a safe default.
+
+data:
+  # Folder that holds your exported CSV or Excel files (relative to the app folder or absolute)
+  folder: data/my_data
+  # Which date the forecast treats as the moment of demand: the date on the sales file.
+  # Export invoices (OINV/INV1) to measure shipped demand, or orders (ORDR/RDR1) to measure requested demand.
+  net_returns_from_demand: false   # true subtracts customer returns from demand
+  as_of_date: ""                   # leave blank to use the last date found in the sales file
+  history_start: ""                # optional: ignore sales before this date (YYYY-MM-DD)
+  default_warehouse: MIA           # used when a sales or stock line has no warehouse
+  currency: USD
+
+forecast:
+  bucket: W                 # W = weekly buckets (recommended), M = monthly
+  horizon_periods: 26       # how far ahead to forecast
+  backtest_origins: 4       # number of rolling test windows used to pick each item's method
+  backtest_horizon: 8       # periods scored in each test window
+  min_history_periods: 13   # items with less history get a simple fallback forecast
+  dead_after_periods: 52    # no sale in this many periods marks the item inactive
+  use_ml_model: true        # also try a gradient boosted model for fast movers
+  spike_cap_multiple: 0     # 0 = off. Otherwise cap single lines above this many times the item's median line (one-off orders)
+
+inventory:
+  # How service is measured: fill_rate = share of units demanded shipped from stock (recommended for parts)
+  #                          cycle     = chance of no stockout before each replenishment arrives
+  service_measure: fill_rate
+  # Service target by ABC class (A = top 80% of revenue)
+  service_level: {A: 0.98, B: 0.96, C: 0.92, new: 0.90}
+  # Budget mode: off       = use the service targets above
+  #              inventory = keep today's average inventory dollars and place them where they serve the most revenue
+  #              current   = keep today's safety stock dollars and place them the same way
+  #              a number such as 1500000 = average inventory dollars to spend that way
+  budget_mode: "off"
+  # economic mode picks each item's cycle service level from margin and holding cost, within these bounds
+  economic_service_level: false
+  economic_bounds: [0.80, 0.99]
+  holding_cost_pct_per_year: 0.25   # cost of carrying $1 of stock for a year
+  order_cost_usd: 25                # extra cost of adding one line to a PO and receiving it
+  max_order_cover_weeks: 26         # never order more than this many weeks of demand unless the supplier minimum forces it
+  review_period_days: 7             # how often buyers review and order
+  simulations: 2000                 # Monte Carlo draws per item for lead time demand
+  policy_paths: 100                 # simulated two-year runs per item when testing reorder points
+  abc_split: [0.80, 0.95]           # cumulative revenue share cut-offs for A and B
+  overstock_weeks: 26               # cover above this many weeks counts as overstock
+  default_lead_time_days: 75        # fallback when an item has no receipts and no lead time setting
+
+alerts:
+  horizon_weeks: 8
+  stockout_probability_threshold: 0.30   # alert when chance of running out in a week is above this
+  late_po_grace_days: 7
+
+purchasing:
+  default_supplier_moq: 1
+  stockout_cost_pct_of_price: 0.30  # lost margin and goodwill per unit short, as a share of selling price
+  supplier_reliability_weight: 1.0  # how strongly unreliable suppliers are penalized in supplier choice
+  po_draft_series: ""               # optional SAP numbering series for draft POs
+
+sales:
+  churn_window_days: 90       # a customer who buys nothing in this window counts as churned in training
+  recommendations_per_customer: 10
+  min_co_buyers: 5            # cross-sell pairs need at least this many shared customers
+  price_floor_percentile: 25  # prices below this percentile of the segment flag a pricing review
+  max_price_change_pct: 5     # pricing suggestions never move a price more than this

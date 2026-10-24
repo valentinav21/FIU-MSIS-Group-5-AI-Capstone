@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
+config/settings_local.yaml
+output/*
+!output/.gitkeep
+data/sample/
+data/my_data/*
+!data/my_data/.gitkeep
