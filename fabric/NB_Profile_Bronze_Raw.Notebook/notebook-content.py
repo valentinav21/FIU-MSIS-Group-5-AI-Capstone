@@ -279,8 +279,95 @@ print(f"LeadTime filled and above zero: {usable:,} of {row_counts[item_name]:,} 
 # META   "language_group": "synapse_pyspark"
 # META }
 
+# MARKDOWN ********************
+
+# ## 06. Date Granularity
+# For every date column in every table, shows the range, how many distinct days and months it has, the median gap between distinct dates, and whether rows carry a time of day. Classifies each column as snapshot, daily, monthly, or irregular. Read-only.
+
 # CELL ********************
 
+# ======================================================================
+# 06. Date Granularity
+# Purpose : Tell whether each date column is a snapshot, daily or monthly.
+# Input   : dfs (name -> DataFrame), row_counts (name -> rows)
+# Output  : granularity (one row per table and date column)
+# Notes   : Matches date, timestamp and timestamp_ntz (Fabric reads these
+#           columns as timestamp_ntz). Collects only the distinct dates
+#           per column, so the driver never pulls full tables.
+#           Transaction tables (sales, POs, receipts) will show as daily
+#           because documents are created on any day. That is event time,
+#           not a daily time series.
+# ======================================================================
+from pyspark.sql import functions as F
+import pandas as pd
+
+DATE_TYPES = ("date", "timestamp", "timestamp_ntz")
+
+rows = []
+for name, df in dfs.items():
+    date_cols = [c for c, t in df.dtypes if t in DATE_TYPES]
+    for c in date_cols:
+        ts = F.col(f"`{c}`").cast("timestamp")
+        base = df.select(ts.alias("ts")).where(F.col("ts").isNotNull())
+
+        # share of rows that carry a time of day (not just a date)
+        pct_time = base.agg(
+            F.avg((F.col("ts") != F.to_date("ts").cast("timestamp")).cast("int"))
+        ).collect()[0][0] or 0
+
+        # distinct calendar dates only (small), then gaps in pandas
+        days = (base.select(F.to_date("ts").alias("d")).distinct()
+                    .toPandas()["d"].pipe(pd.to_datetime).sort_values())
+        if len(days) == 0:
+            continue
+        gaps = days.diff().dt.days.dropna()
+        med_gap = float(gaps.median()) if len(gaps) else None
+        n_days = len(days)
+        n_months = days.dt.to_period("M").nunique()
+        per_month = n_days / n_months
+
+        if n_days == 1:
+            kind = "snapshot (single date)"
+        elif per_month <= 1.5:
+            kind = "monthly"
+        elif med_gap is not None and med_gap <= 3 and per_month >= 5:
+            kind = "daily"
+        else:
+            kind = "irregular"
+
+        rows.append({
+            "table": name, "column": c,
+            "min": days.min().date(), "max": days.max().date(),
+            "distinct_days": n_days, "distinct_months": n_months,
+            "days_per_month": round(per_month, 1),
+            "median_gap_days": med_gap,
+            "pct_rows_with_time": round(100 * pct_time, 1),
+            "granularity": kind,
+        })
+
+granularity = pd.DataFrame(rows).sort_values(["table", "column"]).reset_index(drop=True)
+display(granularity)
+print(f"Date columns profiled: {len(granularity)}")
+print(granularity["granularity"].value_counts().to_string())
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# ======================================================================
+# 06b. Non-daily date columns
+# Purpose : Show which columns are monthly, snapshot or irregular.
+# Input   : granularity (from section 06)
+# Output  : the non-daily rows with their ranges and gaps
+# ======================================================================
+display(granularity[granularity["granularity"] != "daily"]
+        [["table", "column", "min", "max", "distinct_days",
+          "distinct_months", "days_per_month", "median_gap_days", "granularity"]])
 
 # METADATA ********************
 
