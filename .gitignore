@@ -7,3 +7,11 @@ output/*
 data/sample/
 data/my_data/*
 !data/my_data/.gitkeep
+
+# Client data safety (public repo)
+*.parquet
+.env
+.env.*
+*.pem
+*.key
+data/raw/
