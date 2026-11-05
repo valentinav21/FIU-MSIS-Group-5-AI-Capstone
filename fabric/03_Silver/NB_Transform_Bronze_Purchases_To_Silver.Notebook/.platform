@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "NB_Transform_Bronze_Purchases_To_Silver",
+    "description": "Silver: cleans Bronze purchase_orders into lh_fortpro_silver.dbo.purchases (non-canceled PO lines). Follows FORTPRO notebook standards v1.0."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "a3c5beab-93f8-8c3e-4393-2095d9f8315a"
+  }
+}

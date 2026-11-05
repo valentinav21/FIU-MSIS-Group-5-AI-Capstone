@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "NB_Transform_Bronze_Stock_To_Silver",
+    "description": "Silver: cleans Bronze stock_by_warehouse into lh_fortpro_silver.dbo.stock (active warehouses, one row per item and warehouse). FORTPRO notebook standards v1.0."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "0d69653e-a252-8036-470c-5d9bda0637c8"
+  }
+}

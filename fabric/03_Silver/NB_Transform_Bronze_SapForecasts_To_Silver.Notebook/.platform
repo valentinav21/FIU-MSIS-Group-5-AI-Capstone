@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "NB_Transform_Bronze_SapForecasts_To_Silver"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "d3b91eb7-6f2e-9c6c-4468-0d5d584ba1b2"
+  }
+}

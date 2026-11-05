@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "NB_Transform_Bronze_Receipts_To_Silver",
+    "description": "Silver: cleans Bronze goods_receipts (OPDN only) into lh_fortpro_silver.dbo.receipts, PO link via A/P invoice. FORTPRO notebook standards v1.0."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "8ae24fef-caad-89e9-47e5-9a2e483575ab"
+  }
+}

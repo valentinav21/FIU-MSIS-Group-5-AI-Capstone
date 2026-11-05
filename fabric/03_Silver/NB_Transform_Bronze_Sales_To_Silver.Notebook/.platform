@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "NB_Transform_Bronze_Sales_To_Silver",
+    "description": "Silver: cleans Bronze sales_lines (orders, deliveries, invoices) into lh_fortpro_silver.dbo.sales. Follows FORTPRO notebook standards v1.0."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "657ea307-e6cb-a0e5-4827-de607cb5d0e3"
+  }
+}

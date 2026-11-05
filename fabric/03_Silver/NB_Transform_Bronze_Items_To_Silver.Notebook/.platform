@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "NB_Transform_Bronze_Items_To_Silver",
+    "description": "Silver: builds lh_fortpro_silver.dbo.items from Bronze item_master plus latest PO cost and median selling price. Follows FORTPRO notebook standards v1.0."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "56c3f7d6-7846-8b78-42f5-5001b908425e"
+  }
+}

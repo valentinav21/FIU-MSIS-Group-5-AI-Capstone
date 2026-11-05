@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "NB_Transform_Bronze_Suppliers_To_Silver",
+    "description": "Silver: builds lh_fortpro_silver.dbo.suppliers from Bronze supplier_master. FORTPRO notebook standards v1.0."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "362da40b-4e58-b7ae-4a43-6f5f0b260d7d"
+  }
+}
