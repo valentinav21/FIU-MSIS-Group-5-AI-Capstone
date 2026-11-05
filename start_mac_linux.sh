@@ -11,7 +11,7 @@ if [ ! -x ".venv/bin/python" ]; then
   .venv/bin/python -m pip install --upgrade pip
   .venv/bin/python -m pip install -r requirements.txt
 fi
-if [ ! -f "data/sample/INV1.csv" ]; then
+if [ ! -f "data/sample/sample_v2.txt" ]; then
   echo "Building the synthetic sample data..."
   .venv/bin/python tools/generate_synthetic.py
 fi

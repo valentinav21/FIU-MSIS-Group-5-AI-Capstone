@@ -46,7 +46,7 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
     oo_idx = {}
     if oo is not None and len(oo):
         o = oo.copy()
-        o["warehouse"] = o["warehouse"].fillna(settings["data"].get("default_warehouse", "MIA")).astype(str)
+        o["warehouse"] = o["warehouse"].fillna(settings["data"].get("default_warehouse", "A1")).astype(str)
         o["wk"] = np.where(o["due_date"].notna(), np.floor((o["due_date"] - as_of).dt.days / 7), 0)
         o["wk"] = o["wk"].fillna(0).clip(lower=0).astype(int)
         for (it, wh), g in o.groupby(["item_code", "warehouse"]):
@@ -59,12 +59,18 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
     open_pos = lt_model.open_pos if lt_model.open_pos is not None else pd.DataFrame()
     if len(open_pos):
         op = open_pos.copy()
-        op["warehouse"] = op["warehouse"].fillna(settings["data"].get("default_warehouse", "MIA")).astype(str)
+        op["warehouse"] = op["warehouse"].fillna(settings["data"].get("default_warehouse", "A1")).astype(str)
         for (it, wh), g in op.groupby(["item_code", "warehouse"]):
             po_idx[(it, wh)] = g
     sup_ot = {}
-    if len(lt_model.scorecard):
-        sup_ot = lt_model.scorecard.set_index("Supplier")["On time %"].to_dict()
+    ot_col = "On time %" if "On time %" in lt_model.scorecard else "Within usual lead time %"
+    if len(lt_model.scorecard) and ot_col in lt_model.scorecard:
+        sup_ot = lt_model.scorecard.set_index("Supplier")[ot_col].to_dict()
+    ppy = 12 if prep.bucket == "M" else 52
+    unit = "months" if ppy == 12 else "weeks"
+    at_risk_p = int(round(float(settings["forecast"].get("at_risk_months", 12)) * ppy / 12))
+    plan = set(str(w) for w in (prep.warehouses or []))
+    since = t["periods_since_sale"].to_numpy() if "periods_since_sale" in t else np.zeros(len(t))
 
     rows = []
     week_cols = [f"W{w + 1}" for w in range(W)]
@@ -77,7 +83,7 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
         due = oo_idx.get((item, wh))
         committed_now = 0.0
         if due is None:
-            committed_now = float(cur.get("committed") or 0)
+            committed_now = 0.0 if oo is not None else float(cur.get("committed") or 0)
             due = np.zeros(W)
         g = po_idx.get((item, wh))
         mean_w = _weekly_path(fc.path[i], prep.period_days, W)
@@ -113,9 +119,9 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
                 if eta is not None and (next_arrival is None or eta < next_arrival):
                     next_arrival = eta
                 if late:
-                    late_pos.append((str(po["po_entry"]), (as_of - po["promised_date"]).days, q))
+                    late_pos.append((str(po["po_entry"]), lt_model.days_overdue(po, as_of), q))
                 po_notes.append((str(po["po_entry"]), q, med_wk, p.sum()))
-        elif float(cur.get("on_order") or 0) > 0:  # on order but no PO lines supplied
+        elif not lt_model.has_po_lines and float(cur.get("on_order") or 0) > 0:  # on order but no PO lines supplied
             q = float(cur.get("on_order"))
             po_qty = q
             span = max(int(np.ceil(pr["lead_time_median_days"] / 7)), 1)
@@ -139,7 +145,8 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
             risk = "Stockout risk"
             # root causes, strongest evidence first
             for po_e, days, q in late_pos:
-                causes.append(f"PO {po_e} for {q:.0f} units is {days} days past its promised date")
+                causes.append(f"PO {po_e} for {q:.0f} units is {days} days past its promised date" if lt_model.has_promises else
+                              f"PO {po_e} for {q:.0f} units is open {days} days longer than 9 in 10 past orders from this supplier took")
             slow = [n for n in po_notes if n[2] > first]
             if slow and not late_pos:
                 causes.append(f"Next PO ({slow[0][0]}, {slow[0][1]:.0f} units) most likely lands in week {slow[0][2] + 1}, after the risk starts in week {first + 1}")
@@ -157,7 +164,8 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
                 causes.append(f"Stock position {ip_now:.0f} including open POs is below the reorder point {rop:.0f}")
             ot = sup_ot.get(pr["supplier"])
             if ot is not None and np.isfinite(ot) and ot < 0.7:
-                causes.append(f"Supplier {pr['supplier']} delivers on time only {ot:.0%} of the time")
+                causes.append(f"Supplier {pr['supplier']} delivers on time only {ot:.0%} of the time" if lt_model.has_promises else
+                              f"Supplier {pr['supplier']} delivers within its usual lead time only {ot:.0%} of the time")
             if not causes:
                 causes.append("Normal demand variation against a thin stock position")
             action = ("Expedite the late PO or transfer stock from the other warehouse" if late_pos else
@@ -165,10 +173,11 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
         elif weekly > 0 and cover_end > over_w and (med_end - upto) * cost > 250:
             risk = "Overstock"
             excess = (med_end - upto) * cost
-            last13 = M[i, -13:].mean()
-            prev = M[i, -52:-13].mean() if M.shape[1] >= 52 else last13
+            q_ = 13 if ppy == 52 else 3
+            last13 = M[i, -q_:].mean()
+            prev = M[i, -ppy:-q_].mean() if M.shape[1] >= ppy else last13
             if prev > 0 and last13 < 0.5 * prev:
-                causes.append(f"Demand dropped: {last13:.1f} per period in the last 13 vs {prev:.1f} before")
+                causes.append(f"Demand dropped: {last13:.1f} per {unit[:-1]} in the last {q_} {unit} vs {prev:.1f} before")
             if po_qty > 0:
                 causes.append(f"{po_qty:.0f} units still on open POs")
             if float(pr["moq"]) > 13 * weekly:
@@ -178,13 +187,18 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
             action = "Pause or cut open POs, move stock to the other warehouse, or offer it to customers who buy this line"
         elif weekly <= 0 and on_hand > 0 and on_hand * cost > 100:
             risk = "Dead stock"
-            causes.append(f"No demand expected; {on_hand:.0f} units worth ${on_hand * cost:,.0f} on hand")
+            causes.append(f"No sale for {int(since[i])} {unit}; {on_hand:.0f} units worth ${on_hand * cost:,.0f} on hand")
             action = "Review for markdown, return to supplier, or export channel"
+        elif since[i] >= at_risk_p and on_hand > 0 and on_hand * cost > 100:
+            risk = "At-risk stock"
+            causes.append(f"No sale for {int(since[i])} {unit} (at-risk after {at_risk_p}, dead after "
+                          f"{settings['forecast'].get('dead_stock_months', 24)} months); {on_hand:.0f} units worth ${on_hand * cost:,.0f} on hand")
+            action = "Stop reordering, and offer it to customers who bought it before"
         if risk is None:
             continue
         p_max = float(p_out.max())
         rev_risk = exp_short * price
-        excess_val = max((med_end - upto) * cost, 0) if risk == "Overstock" else (on_hand * cost if risk == "Dead stock" else 0.0)
+        excess_val = max((med_end - upto) * cost, 0) if risk == "Overstock" else (on_hand * cost if risk in ("Dead stock", "At-risk stock") else 0.0)
         if risk == "Stockout risk":
             sev = "Critical" if (first <= 1 and p_max >= 0.6) or rev_risk > 5000 else ("High" if p_max >= 0.5 or rev_risk > 1000 else "Medium")
         else:
@@ -204,7 +218,7 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
         seen = set(zip(t.item_code, t.warehouse))
         cost_of = prep.items.set_index("item_code")["unit_cost"].to_dict()
         for (it, wh), cur in st_idx.items():
-            if (it, wh) in seen:
+            if (it, wh) in seen or (plan and str(wh) not in plan):
                 continue
             oh = float(cur.get("on_hand") or 0)
             val = oh * float(cost_of.get(it, 0) or 0)
@@ -212,9 +226,11 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
                 row = {"item_code": it, "warehouse": wh, "risk": "Dead stock", "severity": "High" if val > 5000 else "Medium",
                        "first_risk_week": None, "max_stockout_probability": 0.0, "expected_units_short": 0.0,
                        "revenue_at_risk": 0.0, "excess_value": val, "on_hand": oh, "open_customer_orders": float(cur.get("committed") or 0),
-                       "open_po_qty": float(cur.get("on_order") or 0), "next_po_eta": None, "forecast_next_8_weeks": 0.0,
+                       "open_po_qty": float(po_idx[(it, wh)]["open_qty"].sum()) if (it, wh) in po_idx else
+                                      (0.0 if lt_model.has_po_lines else float(cur.get("on_order") or 0)),
+                       "next_po_eta": None, "forecast_next_8_weeks": 0.0,
                        "projected_end_stock_median": oh, "reorder_point": 0.0,
-                       "root_causes": f"No sale at this warehouse in the whole history loaded; {oh:.0f} units worth ${val:,.0f} on hand",
+                       "root_causes": f"No sale at this warehouse since the history starts; {oh:.0f} units worth ${val:,.0f} on hand",
                        "suggested_action": "Review for markdown, return to supplier, transfer, or export channel",
                        "abc": "C", "supplier": None}
                 for c in week_cols:

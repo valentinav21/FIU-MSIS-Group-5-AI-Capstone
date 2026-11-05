@@ -20,15 +20,16 @@ SETTINGS_PATH = ROOT / "config" / "settings.yaml"
 DEFAULTS = {
     "features": {"bp2_enabled": False},
     "data": {"folder": "data/my_data", "net_returns_from_demand": False, "as_of_date": "", "history_start": "",
-             "default_warehouse": "MIA", "currency": "USD"},
-    "forecast": {"bucket": "W", "horizon_periods": 26, "backtest_origins": 4, "backtest_horizon": 8,
-                 "min_history_periods": 13, "dead_after_periods": 52, "use_ml_model": True, "spike_cap_multiple": 0},
+             "default_warehouse": "A1", "currency": "USD", "plan_warehouses": ["A1", "H1"], "stale_open_days": 180},
+    "forecast": {"bucket": "M", "horizon_periods": 9, "backtest_horizon": 3,
+                 "min_history_periods": 6, "dead_stock_months": 24, "at_risk_months": 12, "backtest_origins": 6,
+                 "item_override": False, "season_adjust_all": True, "selection_metric": "rmsse", "use_ml_model": True, "spike_cap_multiple": 0},
     "inventory": {"service_measure": "fill_rate", "service_level": {"A": 0.98, "B": 0.96, "C": 0.92, "new": 0.90}, "economic_service_level": False,
                   "economic_bounds": [0.80, 0.99], "holding_cost_pct_per_year": 0.25, "order_cost_usd": 25, "max_order_cover_weeks": 26,
                   "review_period_days": 7, "simulations": 2000, "policy_paths": 100, "budget_mode": "off", "model_error_weight": 0.0, "abc_split": [0.80, 0.95], "overstock_weeks": 26,
-                  "default_lead_time_days": 75},
+                  "default_lead_time_days": 105},
     "alerts": {"horizon_weeks": 8, "stockout_probability_threshold": 0.30, "late_po_grace_days": 7},
-    "purchasing": {"default_supplier_moq": 1, "stockout_cost_pct_of_price": 0.30, "supplier_reliability_weight": 1.0,
+    "purchasing": {"default_supplier_moq": 1, "international_min_order_usd": 10000, "stockout_cost_pct_of_price": 0.30, "supplier_reliability_weight": 1.0,
                    "po_draft_series": ""},
     "sales": {"churn_window_days": 90, "recommendations_per_customer": 10, "min_co_buyers": 5,
               "price_floor_percentile": 25, "max_price_change_pct": 5},
@@ -82,17 +83,50 @@ def _read_yaml(path: Path) -> dict:
         raise ValueError(f"{path.name} is not valid YAML: {e}") from e
 
 
+LOCAL_VERSION = 2  # bump when the documented defaults change in a way old saved settings must not override
+
+
+def _diff(new: dict, base: dict) -> dict:
+    """Only the values that differ from base (so saved changes never freeze the other defaults)."""
+    out = {}
+    for k, v in new.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            d = _diff(v, base[k])
+            if d:
+                out[k] = d
+        elif k not in base or base[k] != v:
+            out[k] = v
+    return out
+
+
+def _local_changes() -> dict:
+    """The app's saved changes. Files written by an older version (they held every setting, including the
+    old weekly / MIA defaults) are not trusted: only the data folder is kept from them."""
+    loc = _read_yaml(LOCAL_PATH)
+    if not loc:
+        return {}
+    if loc.get("_version") != LOCAL_VERSION:
+        folder = (loc.get("data") or {}).get("folder")
+        return {"data": {"folder": folder}} if folder else {}
+    return {k: v for k, v in loc.items() if k != "_version"}
+
+
 def load_settings(path: Path | None = None) -> dict:
     """Defaults, then config/settings.yaml, then the app's saved changes (settings_local.yaml)."""
     if path:
         return deep_merge(DEFAULTS, _read_yaml(Path(path)))
-    return deep_merge(deep_merge(DEFAULTS, _read_yaml(SETTINGS_PATH)), _read_yaml(LOCAL_PATH))
+    return deep_merge(deep_merge(DEFAULTS, _read_yaml(SETTINGS_PATH)), _local_changes())
 
 
 def save_settings(settings: dict, path: Path | None = None):
-    path = Path(path) if path else LOCAL_PATH
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(settings, f, sort_keys=False, allow_unicode=True)
+    if path:  # explicit file: write everything
+        with open(Path(path), "w", encoding="utf-8") as f:
+            yaml.safe_dump(settings, f, sort_keys=False, allow_unicode=True)
+        return
+    base = deep_merge(DEFAULTS, _read_yaml(SETTINGS_PATH))
+    out = {"_version": LOCAL_VERSION, **_diff(settings, base)}
+    with open(LOCAL_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump(out, f, sort_keys=False, allow_unicode=True)
 
 
 def reset_settings(keep_folder: str | None = None):

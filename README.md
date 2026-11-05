@@ -33,6 +33,43 @@ supplier and stock figure is invented. Every page shows a banner while sample da
 
 ## 3. Plug in FORTPRO's data
 
+**The cleaned Silver export (Nov 2026).** Dagiana's CSV files (`sales.csv`, `open_orders.csv`, `returns.csv`,
+`purchases.csv`, `receipts.csv`, `stock.csv`, `items.csv`, `suppliers.csv`, `item_suppliers.csv`) load as they are:
+copy them into `data/my_data` (or point the app at their folder) and press **Run analysis**. Keep them inside the
+project team (confidentiality agreement): the app runs on your computer and the files are never uploaded.
+
+The team's data rules are already the defaults in `config/settings.yaml`:
+
+| Rule | Setting |
+|---|---|
+| Demand = sales orders, gross of returns | `net_returns_from_demand: false` |
+| Calendar months, 9-month horizon (as SAP); the unfinished current month is left out of the history | `bucket: M`, `horizon_periods: 9` |
+| Plan A1 and H1 only; A2 stays in the files but is not forecast or bought for | `plan_warehouses: [A1, H1]` |
+| Default warehouse A1 | `default_warehouse: A1` |
+| Dead stock = no sale for 24 months, at-risk = 12 months | `dead_stock_months: 24`, `at_risk_months: 12` |
+| Open POs older than 180 days (PO date) are not incoming; open orders 180+ days past ship date are not committed | `stale_open_days: 180` |
+| About $10,000 minimum order for suppliers outside the US | `international_min_order_usd: 10000` |
+| Fallback lead time 105 days (observed median) | `default_lead_time_days: 105` |
+| Incoming stock = open PO lines (`purchases.open_qty`), not `stock.on_order` | automatic when a PO file is loaded |
+| Receipts joined to the PO on PO key + PO line | automatic |
+| No promise dates: reliability = arriving within 1.5 x the supplier's median lead time | automatic when promise dates are blank |
+
+Costs, holding rate, stockout cost and service targets are **assumptions**, not FORTPRO data; the app labels them so.
+
+**Backtest for the Fabric scorecard.** On the computer that holds the files, in this folder:
+
+```
+python tools/backtest_export.py --data "C:\path\to\silver_csv"
+```
+
+(on Windows: double-click `run_backtest_windows.bat` and paste the folder path). It trains only on
+sales up to 31 Jan 2026, forecasts Feb to Oct 2026 for A1 and H1, and writes `exports/ai_forecast.csv` (item_code,
+warehouse, forecast_month, forecast_qty, method), `exports/ai_forecast_forward.csv` (Nov 2026 to Jul 2027 from the
+latest data) and `exports/backtest_check.txt`, a local score against actual sales orders next to the flat
+12-month average (item x month and 3-month windows). Send the two CSVs to the data engineer.
+
+**Raw SAP exports** still work too:
+
 1. Daniel runs the queries in `tools/sap_export_queries.sql` (or exports the same tables by hand) and saves each
    result as CSV. File names can be the SAP table names: `OITM.csv`, `INV1.csv`, `RIN1.csv`, `OITW.csv`,
    `POR1.csv`, `PDN1.csv`, `ITM2.csv`, plus `suppliers.csv`, `customers.csv`, `open_orders.csv`.
@@ -49,7 +86,7 @@ formats, currency symbols, accounting negatives, leading zeros and DTW second he
 | File | SAP source | Needed for | Priority |
 |---|---|---|---|
 | items | OITM, OITB, OMRC | both | essential |
-| sales | OINV/INV1 (or ORDR/RDR1) | both | essential |
+| sales | ORDR/RDR1 (sales orders, as agreed with FORTPRO) | both | essential |
 | stock | OITW | BP1 | essential |
 | purchases | OPOR/POR1 | BP1 | essential |
 | receipts | OPDN/PDN1 | BP1 | essential |
@@ -70,8 +107,8 @@ With only `items` and `sales` the forecast and stock levels still run; each extr
 |---|---|
 | Overview | Choose data, run, see the headline numbers and the first actions, download the Excel workbook |
 | Data health | Check the export, download templates and SAP queries |
-| Purchase orders | Review, edit and approve draft POs; export SAP drafts (DTW zip or Service Layer JSON); warehouse transfers |
-| Risk alerts | Stockout, overstock and dead stock warnings for the next 8 weeks, with root causes |
+| Purchase orders | Review, edit and approve draft POs; export SAP drafts (DTW zip or Service Layer JSON); warehouse transfers; old open POs to close |
+| Risk alerts | Stockout, overstock, at-risk and dead stock warnings for the next 8 weeks, with root causes |
 | Stock levels | Service versus inventory curve, proof on last year's demand, new MinStock / MaxStock per item |
 | Demand forecast | Per item chart with likely range, method and reason; accuracy and calibration |
 | Suppliers | Lead time distribution and scorecard per supplier |
@@ -88,45 +125,53 @@ For a weekly scheduled run without the app: `python run_batch.py --folder <expor
 
 ## 5. How it works, and how it was checked
 
-**Forecast.** Each item and warehouse is classified (smooth, erratic, intermittent, lumpy, new, inactive) and every
-method in the library is tested on rolling windows it never saw: 13-period moving average (the static SAP style
-baseline), exponential smoothing, Croston, SBA, TSB, temporal aggregation (ADIDA), a seasonal variant and a global
-gradient boosted model. The best method per item is used; items with thin evidence use their class's best method.
-Accuracy is reported on a final window that neither selection nor calibration saw.
+**Forecast.** Monthly. Each item and warehouse is classified (smooth, erratic, intermittent, lumpy, new, inactive) and every
+method in the library is tested on five rolling 3-month windows it never saw: the flat 12-month average (baseline),
+exponential smoothing, Croston, SBA, TSB, temporal aggregation (ADIDA), a combination, a trended yearly average and a
+global gradient boosted model (refit at every window). Each demand class uses its best method, but only if it also
+misses fewer units than the baseline; this guard is there because the first pilot showed intermittent items losing to
+the baseline. Categories with a proven season are deseasonalized for every method. Accuracy is reported on a sixth, final
+window that neither selection nor calibration saw, per item and month and over 3-month windows, as the team scores SAP.
 
-**Ranges you can trust.** Demand is simulated with the item's own share of zero weeks and its own order sizes, plus
+**Ranges you can trust.** Demand is simulated with the item's own share of zero periods and its own order sizes, plus
 forecast error. A quantile calibration learned on one window and checked on the next makes a 95% level hold about
 95% of the time.
 
-**Lead times** come from real PO and receipt dates per item and supplier, falling back to the supplier's pattern,
-then the SAP setting.
+**Lead times** come from real PO and receipt dates per item and supplier (receipts joined to the PO line), falling back
+to the supplier's pattern, then the SAP setting, then 105 days.
 
 **Stock levels.** Each candidate reorder point is tested by simulating two years of weekly operation with simulated
 demand, real minimums and pack sizes, and lead times drawn from history. The lowest level meeting the fill rate target
 wins. A budget mode places a fixed number of dollars item by item where it serves the most revenue.
 
 **Self-check.** Before anything is trusted, the simulator predicts the fill rate of today's SAP min/max settings and
-compares it with what those settings actually delivered when last year's real demand is replayed. On the synthetic
-sample: predicted 84.4%, replayed 86.4% (the simulator errs on the cautious side).
+compares it with what those settings actually delivered when last year's real weekly demand is replayed. On the synthetic
+sample: predicted 83.8%, replayed 86.6% (the simulator errs on the cautious side).
 
 **Results on the synthetic sample** (illustration only; real numbers come from FORTPRO's data):
 
 | Measure | Today's SAP settings | AI planner, same inventory $ | AI planner at targets |
 |---|---|---|---|
-| Fill rate (units), last 52 weeks replayed | 86.5% | 93.2% | 96.4% |
-| Average inventory value | $6.9M | $7.3M | $11.6M |
-| Forecast error (WAPE, 8 week totals) | 59.0% (moving average) | 54.8% | |
-| Forecast bias | +11.3% | +6.1% | |
+| Fill rate (units), last 52 weeks replayed | 87.0% | 94.5% | 98.4% |
+| Average inventory value | $7.0M | $7.1M | $11.0M |
 
-Churn model AUC 0.89 on a later period it never saw; cross-sell hit rate 63.6% versus 57.6% for a best-seller list.
+Forecast error, units per item and month, on the final 3-month holdout: AI 0.574, flat 12-month average 0.583. The
+synthetic demand is random noise around a steady rate, so little can beat a yearly average on it; on FORTPRO's data the
+benchmark to beat is 0.86 (SAP's own forecast: 1.05). The real test is the backtest above.
 
-**Tests.** `python -m pytest tests` runs 28 tests: method kernels, loader robustness on messy exports, full runs on
-complete, minimal (sales and items only) and monthly data, SAP export formats, anonymization, and every app page.
+**Tests.** `python -m pytest tests` runs 40 tests: method kernels, loader robustness on messy exports, full runs on
+complete, minimal (sales and items only, weekly) and monthly data, the FORTPRO data rules (calendar months, A1/H1 only with a fallback,
+receipt-to-PO-line join and its fallback, stale POs and orders, international minimum, dead stock months, sales in the
+unfinished month, old saved settings), the backtest export
+(including a no-leakage check), SAP export formats, anonymization, and every app page.
 They pass on Python 3.11 with the oldest supported libraries and on Python 3.13 with the newest.
 
 ## 6. Limits
 
 * Results are only as good as the export. Check Data health first.
+* Stock is a single snapshot (21 Oct 2026), so stock history cannot be replayed; the replay simulates stock from SAP's
+  MinStock and MaxStock.
+* MOQ and pack sizes are mostly blank until FORTPRO sends them; a minimum of 1 is used meanwhile.
 * The policy replay uses settings computed with the replay year included. Confirm with a forward pilot (for example
   200 items for 8 to 12 weeks) before rolling out.
 * Price sensitivity is reported only where prices varied enough for the same customer and item; otherwise run a test.
@@ -143,7 +188,8 @@ config/         settings.yaml (documented defaults); settings_local.yaml holds c
 data/my_data    put FORTPRO's export here
 data/sample     synthetic sample (rebuilt by tools/generate_synthetic.py)
 data/templates  blank CSV templates and the data dictionary
-tools/          SAP export queries, anonymizer, template and sample builders
+tools/          SAP export queries, anonymizer, template and sample builders, backtest_export.py
+exports/        backtest files written by tools/backtest_export.py (keep inside the team)
 tests/          automated tests
 output/         saved results and Excel workbooks
 ```

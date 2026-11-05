@@ -77,11 +77,18 @@ def money(v, digits=0):
     if v is None or (isinstance(v, float) and not np.isfinite(v)):
         return "n/a"
     a = abs(v)
+    sign = "-" if v < 0 else ""
     if a >= 1e6:
-        return f"${v / 1e6:,.2f}M"
+        return f"{sign}${a / 1e6:,.2f}M"
     if a >= 1e4:
-        return f"${v / 1e3:,.0f}K"
-    return f"${v:,.{digits}f}"
+        return f"{sign}${a / 1e3:,.0f}K"
+    return f"{sign}${a:,.{digits}f}"
+
+
+def signed_money(v):
+    """+$5.15M / -$1.20M, for changes."""
+    m = money(v)
+    return m if m.startswith("-") or m == "n/a" else "+" + m
 
 
 def pct(v, digits=1):
@@ -96,9 +103,12 @@ def num(v, digits=0):
     return f"{v:,.{digits}f}"
 
 
-def colcfg(df: pd.DataFrame, money_cols=(), pct_cols=(), num_cols=(), wide=()):
+def colcfg(df: pd.DataFrame, money_cols=(), pct_cols=(), num_cols=(), wide=(), unit_cols=()):
     cfg = {}
     for c in df.columns:
+        if c in unit_cols:
+            cfg[c] = st.column_config.NumberColumn(c, format="%,.0f")
+            continue
         if c in money_cols:
             cfg[c] = st.column_config.NumberColumn(c, format="$%,.0f")
         elif c in pct_cols:
@@ -126,11 +136,58 @@ def label(c) -> str:
     return " ".join(out)
 
 
+def esc(text: str) -> str:
+    """Escape dollar signs so Streamlit markdown does not read '$...$' as a math formula."""
+    return str(text).replace("$", "\\$")
+
+
+def esc_html(text: str) -> str:
+    """Same, for text inside raw HTML (a backslash would show there)."""
+    return str(text).replace("$", "&#36;")
+
+
+PAGE_SIZES = (25, 50, 100, 250)
+
+
+def paged(df: pd.DataFrame, key: str, default: int = 50) -> pd.DataFrame:
+    """Rows for the current page. Tables grow to fit their rows (the page scrolls, not the grid) and big
+    tables are split into pages, so the grid never needs its own vertical scrollbar."""
+    n = len(df)
+    if n <= 60:  # short tables are shown whole
+        return df
+    c1, c2, c3 = st.columns([1, 1, 4])
+    size = c1.selectbox("Rows per page", PAGE_SIZES, index=PAGE_SIZES.index(default) if default in PAGE_SIZES else 0,
+                        key=f"{key}_size")
+    pages = max(int(np.ceil(n / size)), 1)
+    page = c2.number_input(f"Page (of {pages:,})", min_value=1, max_value=pages, value=1, step=1, key=f"{key}_page")
+    lo = (int(page) - 1) * size
+    c3.markdown(f'<p class="fp-note" style="margin-top:2.1rem">Rows {lo + 1:,} to {min(lo + size, n):,} of {n:,}. '
+                'Sorting a column sorts this page; the download has every row.</p>', unsafe_allow_html=True)
+    return df.iloc[lo:lo + size]
+
+
+def _key_for(df, key):
+    return key or "tbl_" + str(abs(hash((tuple(map(str, df.columns)), len(df)))) % 10 ** 9)
+
+
+def _one_decimal_percent(d: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Streamlit's 'percent' format shows two decimals; show every share the same way: 87.0%."""
+    for c, v in list(cfg.items()):
+        tc = v.get("type_config", {}) if isinstance(v, dict) else {}
+        if tc.get("type") == "number" and tc.get("format") == "percent" and c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors="coerce") * 100
+            cfg[c] = st.column_config.NumberColumn(v.get("label") or c, format="%.1f%%", help=v.get("help"))
+    return d
+
+
 def show_df(df, column_config=None, height=None, key=None, **_):
-    """st.dataframe with readable headers, no index and full width."""
+    """st.dataframe with readable headers, no index and full width. Grows to fit its rows (paged when long),
+    so it scrolls with the page and the fullscreen button shows the whole grid."""
     cfg = {label(k): v for k, v in (column_config or {}).items()}
-    st.dataframe(df.rename(columns={c: label(c) for c in df.columns}), hide_index=True, width="stretch",
-                 height=height if height else "auto", column_config=cfg, key=key)
+    k = _key_for(df, key)
+    d = paged(df, k).rename(columns={c: label(c) for c in df.columns})
+    d = _one_decimal_percent(d.copy(), cfg)
+    st.dataframe(d, hide_index=True, width="stretch", height="content", column_config=cfg, key=key)
 
 
 def pretty(df: pd.DataFrame) -> pd.DataFrame:
@@ -140,13 +197,18 @@ def pretty(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def table(df, height=None, money_cols=(), pct_cols=(), num_cols=(), wide=(), key=None):
+def table(df, height=None, money_cols=(), pct_cols=(), num_cols=(), wide=(), key=None, unit_cols=()):
     d = pretty(df)
     m = [str(c).replace("_", " ").capitalize() if str(c) == str(c).lower() else c for c in money_cols]
     p = [str(c).replace("_", " ").capitalize() if str(c) == str(c).lower() else c for c in pct_cols]
     n = [str(c).replace("_", " ").capitalize() if str(c) == str(c).lower() else c for c in num_cols]
     w = [str(c).replace("_", " ").capitalize() if str(c) == str(c).lower() else c for c in wide]
-    st.dataframe(d, hide_index=True, width="stretch", height=height, column_config=colcfg(d, m, p, n, w), key=key)
+    k = _key_for(df, key)
+    d = paged(d, k).copy()
+    u = [str(c).replace("_", " ").capitalize() if str(c) == str(c).lower() else c for c in unit_cols]
+    cfg = colcfg(d, m, p, n, w, u)
+    d = _one_decimal_percent(d, cfg)
+    st.dataframe(d, hide_index=True, width="stretch", height="content", column_config=cfg, key=key)
 
 
 def download_csv(df, name, label="Download CSV", key=None):
@@ -192,8 +254,10 @@ def kpi_row(items):
     for c, it in zip(cols, items):
         label, value, delta, help_ = it[:4]
         color = it[4] if len(it) > 4 else ("normal" if delta and any(k in str(delta) for k in ("pts", "x ")) else "off")
+        # an arrow only for signed changes (+8.8 pts, -$1.2M); plain notes such as "$8.28M" or "lower than baseline" get none
+        arrow = "auto" if delta is not None and str(delta).strip()[:1] in "+-" else "off"
         with c:
-            st.metric(label, value, delta=delta, help=help_, border=True, delta_color=color)
+            st.metric(label, value, delta=delta, help=help_, border=True, delta_color=color, delta_arrow=arrow)
 
 
 def settings():

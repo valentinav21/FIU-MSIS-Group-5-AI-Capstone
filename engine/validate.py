@@ -72,16 +72,36 @@ def run_checks(res, settings) -> pd.DataFrame:
             linked = gr["po_entry"].isin(set(po["po_entry"])).mean() if gr["po_entry"].notna().any() else 0
             rows.append(_row("receipts", "Receipts linked to a PO", OK if linked > 0.9 else (WARN if linked > 0.5 else FAIL),
                              f"{linked:.0%} of receipt lines",
-                             "Keep BaseEntry and BaseLine on PDN1 exports. Unlinked receipts are matched by item and supplier."))
+                             "Receipts are joined to the PO line on PO key + line (BaseEntry + BaseLine). Receipts with no PO key "
+                             "are matched to the latest earlier PO of the same item and supplier."))
         else:
             rows.append(_row("receipts", "Goods receipts", WARN, "No receipts file",
                              "Without receipts the lead time comes from settings, not history."))
         pr = po["promised_date"].notna().mean()
-        rows.append(_row("purchases", "POs with a promised date", OK if pr > 0.8 else WARN, f"{pr:.0%} of PO lines",
-                         "Needed for on-time scoring. ShipDate on POR1 or DocDueDate on OPOR."))
+        rows.append(_row("purchases", "POs with a promised date", OK if pr > 0.8 else (WARN if pr >= 0.2 else INFO), f"{pr:.0%} of PO lines",
+                         "With promise dates: on-time % and days late. Without them (FORTPRO): reliability = arriving within 1.5 x "
+                         "the supplier's median lead time, and a PO is late once older than 9 in 10 past orders."))
+        days = int((settings or {}).get("data", {}).get("stale_open_days", 0) or 0)
+        if days and po["open_qty"].notna().any():
+            asof = po["po_date"].max()
+            o = po[po["open_qty"].fillna(0) > 0]
+            old = (asof - o["po_date"]).dt.days > days
+            rows.append(_row("purchases", f"Open PO lines older than {days} days", OK if old.sum() == 0 else WARN,
+                             f"{int(old.sum())} lines, {o.loc[old, 'open_qty'].sum():,.0f} units",
+                             "Not counted as incoming stock. Close or confirm them in SAP."))
     else:
         rows.append(_row("purchases", "Purchase orders", WARN, "No purchase file",
                          "Lead times, supplier scorecards and open PO arrivals need POR1 and PDN1."))
+    if stock is not None and len(stock) and po is not None and len(po) and "on_order" in stock and stock["on_order"].notna().any():
+        a_, b_ = float(stock["on_order"].fillna(0).sum()), float(po["open_qty"].fillna(0).clip(lower=0).sum())
+        if a_ > 0 and abs(a_ - b_) / a_ > 0.05:
+            rows.append(_row("stock", "Stock on_order vs open PO lines", INFO, f"{a_:,.0f} vs {b_:,.0f} units",
+                             "Incoming stock uses the open PO lines (purchases.open_qty); stock.on_order is only a fallback."))
+    plan = [str(w) for w in ((settings or {}).get("data", {}).get("plan_warehouses") or [])]
+    if sales is not None and plan:
+        out = ~sales["warehouse"].astype(str).isin(plan)
+        rows.append(_row("sales", "Sales outside the planning warehouses", INFO, f"{out.mean():.1%} of lines",
+                         f"Planning covers {', '.join(plan)} only (Settings). Other warehouses stay in the files but are not forecast."))
     cust = t.get("customers")
     if sales is not None and cust is not None and len(cust):
         miss = ~sales["customer_code"].dropna().isin(set(cust["customer_code"]))

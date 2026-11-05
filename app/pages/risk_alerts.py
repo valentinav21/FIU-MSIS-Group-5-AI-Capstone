@@ -20,11 +20,14 @@ if need(a, "risk alerts"):
     kpi_row([("Stockout risks", f"{len(so):,}", f"{(so['severity'] == 'Critical').sum():,} critical", "Chance of running out in some week above the alert threshold."),
              ("Revenue at risk", money(so["revenue_at_risk"].sum()), None, "Expected units short times selling price, next 8 weeks."),
              ("Overstock", f"{(a['risk'] == 'Overstock').sum():,}", money(a.loc[a['risk'] == 'Overstock', 'excess_value'].sum()), "Stock above the order-up-to level with cover beyond the limit in Settings."),
-             ("Dead stock", f"{(a['risk'] == 'Dead stock').sum():,}", money(a.loc[a['risk'] == 'Dead stock', 'excess_value'].sum()), "On hand with no demand expected.")])
+             ("Dead stock", f"{(a['risk'] == 'Dead stock').sum():,}", money(a.loc[a['risk'] == 'Dead stock', 'excess_value'].sum()),
+              f"On hand with no sale for {r.settings.get("forecast", {}).get("dead_stock_months", 24)} months or more (or never sold here)."),
+             ("At-risk stock", f"{(a['risk'] == 'At-risk stock').sum():,}", money(a.loc[a['risk'] == 'At-risk stock', 'excess_value'].sum()),
+              f"On hand with no sale for {r.settings.get('forecast', {}).get('at_risk_months', 12)} months or more, not yet dead.")])
     c1, c2, c3, c4 = st.columns(4)
-    kind = c1.multiselect("Risk type", sorted(a["risk"].unique()), default=["Stockout risk"])
+    kind = c1.multiselect("Risk type", sorted(a["risk"].dropna().astype(str).unique()), default=["Stockout risk"] if (a["risk"] == "Stockout risk").any() else None)
     sev = c2.multiselect("Severity", ["Critical", "High", "Medium"])
-    wh = c3.multiselect("Warehouse", sorted(a["warehouse"].unique()))
+    wh = c3.multiselect("Warehouse", sorted(a["warehouse"].dropna().astype(str).unique()))
     q = c4.text_input("Search item")
     d = a.copy()
     if kind:

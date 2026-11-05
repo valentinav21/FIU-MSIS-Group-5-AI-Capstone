@@ -76,16 +76,17 @@ def _inputs(prep, pol, rows):
 
 def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extra: dict | None = None) -> dict:
     """extra: optional {name: (reorder point array, order-up-to array)} aligned with pol.table rows."""
-    if prep.period_days != 7.0:
-        return {"note": "Policy replay runs on weekly buckets only."}
+    WM = prep.weekly_matrix()
+    if WM is None:
+        return {"note": "Policy replay needs weekly sales history."}
     t = pol.table
-    T = prep.matrix.shape[1]
+    T = WM.shape[1]
     warm = min(52, max(T - weeks, 0))
     total = warm + weeks
     if T < weeks + 13:
         return {"note": "Policy replay needs at least 65 weeks of sales history."}
     ok = (t["forecast_per_period"] > 0) & t["current_min"].notna() & t["current_max"].notna()
-    ok &= pd.Series(prep.matrix[:, -weeks:].sum(axis=1) > 0, index=t.index)
+    ok &= pd.Series(WM[:, -weeks:].sum(axis=1) > 0, index=t.index)
     idx = np.nonzero(ok.to_numpy())[0]
     if len(idx) == 0:
         return {"note": "Needs SAP MinStock and MaxStock on the stock file and at least one sale in the replay window."}
@@ -94,7 +95,7 @@ def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extr
         a = idx[t["abc"].to_numpy()[idx] == "A"]
         rest = np.setdiff1d(idx, a)
         idx = np.sort(np.concatenate([a, rng.choice(rest, max(max_series - len(a), 0), replace=False)])) if len(a) < max_series else a[:max_series]
-    D = prep.matrix[idx, -total:]
+    D = WM[idx, -total:]
     cost = t["unit_cost"].to_numpy()[idx]
     price = t["sell_price"].to_numpy()[idx]
     moq, mult, lts = _inputs(prep, pol, idx)
@@ -133,7 +134,8 @@ def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extr
 def calibrate_kappa(prep, fc, lt_model, tables, settings, inventory_mod, sample=300, seed=4, grid=(0.0, 0.5, 1.0)):
     """Pick how much forecast level error to add inside policy simulation, by matching
     predicted fill for today's SAP settings to replayed fill on real history."""
-    if prep.period_days != 7.0 or prep.matrix.shape[1] < 65:
+    WM = prep.weekly_matrix()
+    if WM is None or WM.shape[1] < 65:
         return float(settings["inventory"].get("model_error_weight", 0.0)), pd.DataFrame()
     stock = tables.get("stock")
     if stock is None or len(stock) == 0 or stock["min_stock"].isna().all() or stock["max_stock"].isna().all():
@@ -141,13 +143,13 @@ def calibrate_kappa(prep, fc, lt_model, tables, settings, inventory_mod, sample=
     st = stock.dropna(subset=["min_stock", "max_stock"])
     keyset = set(zip(st["item_code"], st["warehouse"].astype(str)))
     t = fc.table
-    live = (fc.path[:, :13].mean(axis=1) > 1e-3) & (prep.matrix[:, -52:].sum(axis=1) > 0)
+    live = (fc.path[:, :13].mean(axis=1) > 1e-3) & (WM[:, -52:].sum(axis=1) > 0)
     cand = [i for i in np.nonzero(live)[0] if (t.item_code.iat[i], t.warehouse.iat[i]) in keyset]
     if len(cand) < 30:
         return float(settings["inventory"].get("model_error_weight", 0.0)), pd.DataFrame()
     rng = np.random.default_rng(seed)
     sub = sorted(rng.choice(cand, min(sample, len(cand)), replace=False).tolist())
-    T = prep.matrix.shape[1]
+    T = WM.shape[1]
     warm = min(52, T - 52)
     rows, best, best_err = [], 0.0, 9e9
     actual = None
@@ -159,7 +161,7 @@ def calibrate_kappa(prep, fc, lt_model, tables, settings, inventory_mod, sample=
         if actual is None:
             ridx = np.arange(len(sub))
             moq, mult, lts = _inputs(prep, pol, ridx)
-            r = replay(prep.matrix[sub, -(warm + 52):], tt["current_min"].to_numpy(float), tt["current_max"].to_numpy(float),
+            r = replay(WM[sub, -(warm + 52):], tt["current_min"].to_numpy(float), tt["current_max"].to_numpy(float),
                        moq, mult, lts, tt["unit_cost"].to_numpy(), warm, np.random.default_rng(seed + 1))
             w = r["demand"] * tt["sell_price"].to_numpy()
             actual = float(np.nansum(r["fill"] * w) / max(np.nansum(w[np.isfinite(r["fill"])]), 1e-9))

@@ -13,7 +13,7 @@ import pandas as pd
 from . import alerts, forecast, inventory, io, leadtime, prep, probabilistic, purchasing, replay, sales, validate
 
 RESULTS_DIR = io.ROOT / "output"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 @dataclass
@@ -54,6 +54,9 @@ class Results:
     alerts: pd.DataFrame = field(default_factory=pd.DataFrame)
     po_recs: pd.DataFrame = field(default_factory=pd.DataFrame)
     transfers: pd.DataFrame = field(default_factory=pd.DataFrame)
+    stale_pos: pd.DataFrame = field(default_factory=pd.DataFrame)
+    history_end: pd.Timestamp | None = None
+    first_forecast_start: pd.Timestamp | None = None
     replay: dict = field(default_factory=dict)
     sales: sales.SalesResult | None = None
     customers_master: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -99,6 +102,7 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
             save_results(res)
         return res
     res.as_of, res.bucket, res.period_days = P.as_of, P.bucket, P.period_days
+    res.history_end, res.first_forecast_start = P.history_end, P.first_forecast_start
     res.notes += P.notes
     res.items, res.keys, res.history, res.period_end = P.items, P.keys, P.matrix, P.period_end
 
@@ -116,6 +120,21 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
     if L is not None:
         res.supplier_scorecard = L.scorecard
         res.lead_time_samples = {k: v for k, v in L.by_supplier.items()}
+        res.stale_pos = L.stale_pos if L.stale_pos is not None else pd.DataFrame()
+        if L.stale_pos is not None and len(L.stale_pos):
+            sp = L.stale_pos
+            res.notes.append(f"{len(sp)} open PO lines ({sp['open_qty'].sum():,.0f} units) are older than "
+                             f"{settings['data'].get('stale_open_days')} days and are not counted as incoming. "
+                             f"Close or confirm them in SAP (list on Purchase orders).")
+        if not L.has_promises and L.has_po_lines:
+            res.notes.append("PO promise dates are blank, so supplier reliability is measured as arriving within the "
+                             "supplier's usual lead time (1.5 x its median), and a PO counts as late once it is older than 9 in 10 past orders.")
+    # open customer orders that still count (planning warehouses, not stale)
+    tables = dict(tables)
+    oo, oo_notes = prep.trusted_open_orders(tables, settings, P.as_of, warehouses=P.warehouses)
+    if oo is not None:
+        tables["open_orders"] = oo
+    res.notes += oo_notes
 
     Pol = None
     if F is not None and L is not None:
@@ -177,7 +196,7 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
         R = _step(res, "Building purchase order recommendations", lambda: purchasing.build(P, F, Pol, L, tables, settings), progress, 0.76)
         if R is not None:
             res.po_recs = R
-        T = _step(res, "Checking warehouse transfers", lambda: purchasing.transfers(Pol, tables, settings), progress, 0.82)
+        T = _step(res, "Checking warehouse transfers", lambda: purchasing.transfers(Pol, tables, settings, lt_model=L), progress, 0.82)
         if T is not None:
             res.transfers = T
         extra = {}

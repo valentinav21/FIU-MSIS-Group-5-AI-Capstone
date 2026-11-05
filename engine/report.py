@@ -84,6 +84,9 @@ def workbook(res) -> bytes:
         sheets.append(("PO recommendations", res.po_recs))
     if len(res.transfers):
         sheets.append(("Transfers", res.transfers))
+    sp = getattr(res, "stale_pos", None)
+    if sp is not None and len(sp):
+        sheets.append(("Old open POs", sp))
     if len(res.alerts):
         sheets.append(("Risk alerts", res.alerts))
     if len(res.policy):

@@ -1,5 +1,6 @@
 # FORTPRO AI Planner settings
 # Edit here or on the Settings page in the app. Every value has a safe default.
+# Costs, holding rate, stockout cost and service targets are ASSUMPTIONS, not FORTPRO data. Replace them when known.
 
 features:
   # The group is tackling BP1 (purchasing). BP2 (sales growth) pages show as TBD until this is true.
@@ -8,22 +9,31 @@ features:
 data:
   # Folder that holds your exported CSV or Excel files (relative to the app folder or absolute)
   folder: data/my_data
-  # Which date the forecast treats as the moment of demand: the date on the sales file.
-  # Export invoices (OINV/INV1) to measure shipped demand, or orders (ORDR/RDR1) to measure requested demand.
-  net_returns_from_demand: false   # true subtracts customer returns from demand
+  # Demand = sales orders (ORDR/RDR1), as agreed with FORTPRO. The order date is the moment of demand.
+  net_returns_from_demand: false   # SAP's own forecast uses gross sales, so returns are not netted
   as_of_date: ""                   # leave blank to use the last date found in the sales file
   history_start: ""                # optional: ignore sales before this date (YYYY-MM-DD)
-  default_warehouse: MIA           # used when a sales or stock line has no warehouse
+  default_warehouse: A1            # used when a line has no warehouse (A1 = Master, Florida)
+  # Warehouses to forecast and buy for, as in SAP MRP (A1 Master, H1 Houston). A2 Trading stays in the files
+  # but is left out: few, large one-off orders. Add A2 here to plan it too.
+  plan_warehouses: [A1, H1]
+  # Open lines older than this are not trusted: a PO this old (by PO date) is not counted as incoming,
+  # and a sales order this far past its ship date is not counted as committed. About the 90th percentile lead time.
+  stale_open_days: 180
   currency: USD
 
 forecast:
-  bucket: W                 # W = weekly buckets (recommended), M = monthly
-  horizon_periods: 26       # how far ahead to forecast
-  backtest_origins: 4       # number of rolling test windows used to pick each item's method
-  backtest_horizon: 8       # periods scored in each test window
-  min_history_periods: 13   # items with less history get a simple fallback forecast
-  dead_after_periods: 52    # no sale in this many periods marks the item inactive
-  use_ml_model: true        # also try a gradient boosted model for fast movers
+  bucket: M                 # M = calendar months (as SAP does), W = weeks
+  horizon_periods: 9        # how far ahead to forecast (SAP MRP looks 9 months ahead)
+  backtest_origins: 6       # rolling test windows used to pick methods (6 x 3 months = the last 18 months)
+  item_override: false      # false = each demand class uses the method that tested best for the class (more robust
+                            # with monthly data); true = an item may use its own best method if it was clearly better
+  backtest_horizon: 3       # periods scored in each test window (3 months)
+  min_history_periods: 6    # items with less history (in periods) get a simple fallback forecast
+  dead_stock_months: 24     # no sale for this long = dead stock (no demand planned)
+  at_risk_months: 12        # no sale for this long = at-risk stock (flagged, still planned)
+  use_ml_model: true        # also try a gradient boosted model trained across all items
+  season_adjust_all: true   # where a category has a proven season, every method works on deseasonalized demand
   spike_cap_multiple: 0     # 0 = off. Otherwise cap single lines above this many times the item's median line (one-off orders)
 
 inventory:
@@ -48,7 +58,7 @@ inventory:
   policy_paths: 100                 # simulated two-year runs per item when testing reorder points
   abc_split: [0.80, 0.95]           # cumulative revenue share cut-offs for A and B
   overstock_weeks: 26               # cover above this many weeks counts as overstock
-  default_lead_time_days: 75        # fallback when an item has no receipts and no lead time setting
+  default_lead_time_days: 105       # fallback when an item has no receipts and no SAP setting (observed median is about 105)
 
 alerts:
   horizon_weeks: 8
@@ -56,6 +66,7 @@ alerts:
   late_po_grace_days: 7
 
 purchasing:
+  international_min_order_usd: 10000   # suppliers outside the US: minimum PO value (all lines to that supplier)
   default_supplier_moq: 1
   stockout_cost_pct_of_price: 0.30  # lost margin and goodwill per unit short, as a share of selling price
   supplier_reliability_weight: 1.0  # how strongly unreliable suppliers are penalized in supplier choice

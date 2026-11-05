@@ -73,7 +73,7 @@ _t(Table(
 ))
 
 _t(Table(
-    key="sales", title="Sales transaction lines", sap_source="OINV/INV1 (or ORDR/RDR1, ODLN/DLN1)", problem="BP1, BP2", essential=True,
+    key="sales", title="Sales transaction lines", sap_source="ORDR/RDR1 sales orders (agreed with FORTPRO; OINV/INV1 also accepted)", problem="BP1, BP2", essential=True,
     desc="One row per invoice (or order) line. This is the demand history and the customer purchase history.",
     cols=(
         Col("doc_date", "date", True, "OINV.DocDate", "Document date used as the demand date", ("docdate", "invoicedate", "date", "postingdate", "orderdate")),

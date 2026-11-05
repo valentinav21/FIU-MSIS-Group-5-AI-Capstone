@@ -7,3 +7,7 @@ output/*
 data/sample/
 data/my_data/*
 !data/my_data/.gitkeep
+
+# backtest files are built from FORTPRO data: keep them out of git
+exports/
+config/settings_local.yaml

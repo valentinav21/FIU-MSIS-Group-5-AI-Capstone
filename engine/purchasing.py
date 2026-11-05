@@ -13,7 +13,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from .inventory import ServiceCurve, calibrated_samples
+from .inventory import NO_SUPPLIER, ServiceCurve, calibrated_samples, is_code
 from .probabilistic import lead_time_demand
 
 
@@ -22,19 +22,21 @@ def _options(item, planning_sup, tables, lt_model, item_cost):
     isup = tables.get("item_suppliers")
     if isup is not None and len(isup):
         for r in isup[isup["item_code"] == item].itertuples(index=False):
+            if not is_code(r.supplier_code):
+                continue
             opts.setdefault(r.supplier_code, {"price": r.unit_price, "moq": r.moq, "mult": r.order_multiple,
                                               "landed": r.landed_cost_pct})
     po = lt_model.po_lines
     if len(po):
         g = po[po["item_code"] == item].sort_values("po_date")
-        for sup, gg in g.groupby("supplier_code"):
+        for sup, gg in g.loc[g["supplier_code"].map(is_code).astype(bool)].groupby("supplier_code"):
             o = opts.setdefault(sup, {"price": np.nan, "moq": np.nan, "mult": np.nan, "landed": np.nan})
             if not pd.notna(o["price"]) and gg["unit_price"].notna().any():
                 o["price"] = gg["unit_price"].dropna().iloc[-1]
-    if planning_sup and planning_sup not in opts:
+    if is_code(planning_sup) and planning_sup not in opts:
         opts[planning_sup] = {"price": np.nan, "moq": np.nan, "mult": np.nan, "landed": np.nan}
     if not opts:
-        opts[planning_sup or "UNKNOWN"] = {"price": np.nan, "moq": np.nan, "mult": np.nan, "landed": np.nan}
+        opts[NO_SUPPLIER] = {"price": np.nan, "moq": np.nan, "mult": np.nan, "landed": np.nan}
     for o in opts.values():
         o["price"] = float(o["price"]) if pd.notna(o["price"]) else float(item_cost)
         o["landed"] = float(o["landed"]) if pd.notna(o["landed"]) else 0.0
@@ -67,13 +69,13 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=9, n_sims=1000):
     oo_tot = {}
     if oo is not None and len(oo):
         o = oo.copy()
-        o["warehouse"] = o["warehouse"].fillna(settings["data"].get("default_warehouse", "MIA")).astype(str)
+        o["warehouse"] = o["warehouse"].fillna(settings["data"].get("default_warehouse", "A1")).astype(str)
         oo_tot = o.groupby(["item_code", "warehouse"])["open_qty"].sum().to_dict()
     op = lt_model.open_pos if lt_model.open_pos is not None and len(lt_model.open_pos) else None
     po_tot = {}
     if op is not None:
         o = op.copy()
-        o["warehouse"] = o["warehouse"].fillna(settings["data"].get("default_warehouse", "MIA")).astype(str)
+        o["warehouse"] = o["warehouse"].fillna(settings["data"].get("default_warehouse", "A1")).astype(str)
         po_tot = o.groupby(["item_code", "warehouse"])["open_qty"].sum().to_dict()
     names_items = prep.items.set_index("item_code")["item_name"].to_dict()
     rows = []
@@ -84,8 +86,9 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=9, n_sims=1000):
         item, wh = pr["item_code"], pr["warehouse"]
         cur = st_idx.get((item, wh), {})
         on_hand = max(float(cur.get("on_hand") or 0), 0.0)
-        committed = float(oo_tot.get((item, wh), cur.get("committed") or 0) or 0)
-        on_po = float(po_tot.get((item, wh), cur.get("on_order") or 0) or 0) if op is not None else float(cur.get("on_order") or 0)
+        # open customer orders and open PO lines are the source when supplied; stock.committed / on_order only as fallback
+        committed = float(oo_tot.get((item, wh), 0.0)) if oo is not None else float(cur.get("committed") or 0)
+        on_po = float(po_tot.get((item, wh), 0.0)) if lt_model.has_po_lines else float(cur.get("on_order") or 0)
         ip = on_hand - committed + on_po
         rop, upto = float(pr["reorder_point"]), float(pr["order_up_to"])
         per_day = pr["forecast_per_period"] / prep.period_days
@@ -136,6 +139,9 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=9, n_sims=1000):
         best = ev[0]
         why = [f"Stock position {ip:.0f} (on hand {on_hand:.0f} - customer orders {committed:.0f} + open POs {on_po:.0f}) "
                f"{'is at or below' if action == 'Order now' else 'will reach'} the reorder point {rop:.0f}. Ordering up to {upto:.0f}."]
+        if best["supplier"] == NO_SUPPLIER:
+            why.append("No supplier on file for this item (no preferred vendor, PO history or sourcing record): "
+                       "choose one in SAP. This line is left out of the SAP draft export.")
         if best["qty"] > need + 0.5:
             why.append(f"Quantity rounded up from {need:.0f} to {best['qty']:.0f} for the supplier minimum or pack size.")
         if len(ev) > 1:
@@ -153,7 +159,7 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=9, n_sims=1000):
                        f"(about {best['exp_short']:.1f} units); consider a transfer or expediting.")
         eta = as_of + pd.Timedelta(days=float(best["lt_median"]))
         rows.append({
-            "approve": action == "Order now", "action": action, "order_by": order_by.normalize(),
+            "approve": action == "Order now" and best["supplier"] != NO_SUPPLIER, "action": action, "order_by": order_by.normalize(),
             "item_code": item, "item_name": names_items.get(item, item), "warehouse": wh, "abc": pr["abc"],
             "supplier": best["supplier"], "supplier_name": names.get(best["supplier"], best["supplier"]),
             "quantity": best["qty"], "unit_price": round(best["unit_price"], 4), "line_total": round(best["qty"] * best["unit_price"], 2),
@@ -168,16 +174,46 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=9, n_sims=1000):
         })
     out = pd.DataFrame(rows)
     if len(out):
+        out = apply_international_minimum(out, tables, settings)
         out = out.sort_values(["action", "expected_units_short_before_arrival", "line_total"],
                               ascending=[True, False, False]).reset_index(drop=True)
+    return out
+
+
+def apply_international_minimum(out, tables, settings):
+    """Flag draft POs to suppliers outside the US that fall below the minimum order value (about $10,000 at FORTPRO).
+    The check runs on the total of the 'Order now' lines to that supplier, all warehouses together."""
+    mn = float(settings["purchasing"].get("international_min_order_usd", 0) or 0)
+    out["supplier_country"] = ""
+    out["supplier_po_total"] = np.nan
+    out["below_supplier_minimum"] = False
+    sm = tables.get("suppliers")
+    if sm is None or len(sm) == 0 or "country" not in sm:
+        return out
+    ctry = sm.set_index("supplier_code")["country"].astype(str).str.strip().str.upper().to_dict()
+    out["supplier_country"] = out["supplier"].map(ctry).fillna("")
+    now = out["action"] == "Order now"
+    tot = out[now].groupby("supplier")["line_total"].sum()
+    out["supplier_po_total"] = out["supplier"].map(tot)
+    if mn <= 0:
+        return out
+    intl = ~out["supplier_country"].isin(["", "US", "USA", "UNITED STATES", "NAN"])
+    low = intl & now & (out["supplier_po_total"].fillna(0) < mn)
+    out["below_supplier_minimum"] = low
+    for i in np.nonzero(low.to_numpy())[0]:
+        r = out.iloc[i]
+        out.iat[i, out.columns.get_loc("why")] = (r["why"] + f" Supplier {r['supplier']} ({r['supplier_country']}) has a minimum order of "
+                                                  f"about ${mn:,.0f}; all lines due now total ${r['supplier_po_total']:,.0f}. "
+                                                  f"Add 'Order soon' lines to reach it, buy from a US source, or wait (assumed minimum, confirm with the supplier).")
     return out
 
 
 # ---------------------------------------------------------------------------- SAP export
 
 def group_drafts(recs: pd.DataFrame, as_of) -> list[dict]:
-    """One draft PO per supplier and warehouse."""
+    """One draft PO per supplier and warehouse. Lines with no supplier are left out (SAP needs a CardCode)."""
     drafts = []
+    recs = recs.loc[recs["supplier"].map(is_code).astype(bool) & (recs["supplier"] != NO_SUPPLIER)]
     for k, ((sup, wh), g) in enumerate(recs.groupby(["supplier", "warehouse"]), start=1):
         due = g["expected_arrival"].max()
         drafts.append({"key": k, "supplier": sup, "warehouse": wh, "doc_date": pd.Timestamp(as_of), "due": pd.Timestamp(due),
@@ -227,7 +263,7 @@ def to_service_layer(recs: pd.DataFrame, as_of) -> str:
     return json.dumps(out, indent=2)
 
 
-def transfers(pol, tables, settings, transfer_days: float = 5.0) -> pd.DataFrame:
+def transfers(pol, tables, settings, transfer_days: float = 5.0, lt_model=None) -> pd.DataFrame:
     """Suggest moving stock between warehouses when one is short and another holds more than it needs."""
     P = pol.table
     stock = tables.get("stock")
@@ -236,6 +272,12 @@ def transfers(pol, tables, settings, transfer_days: float = 5.0) -> pd.DataFrame
     st = stock.copy()
     st["warehouse"] = st["warehouse"].astype(str)
     st = st.drop_duplicates(["item_code", "warehouse"]).set_index(["item_code", "warehouse"])
+    oo = tables.get("open_orders")
+    oo_tot = oo.groupby(["item_code", "warehouse"])["open_qty"].sum().to_dict() if oo is not None and len(oo) else None
+    po_tot = None
+    if lt_model is not None and lt_model.has_po_lines:
+        op = lt_model.open_pos
+        po_tot = op.assign(warehouse=op["warehouse"].astype(str)).groupby(["item_code", "warehouse"])["open_qty"].sum().to_dict() if len(op) else {}
     rows = []
     for item, g in P[P["forecast_per_period"] > 0].groupby("item_code"):
         if len(g) < 2:
@@ -244,8 +286,14 @@ def transfers(pol, tables, settings, transfer_days: float = 5.0) -> pd.DataFrame
         for _, r in g.iterrows():
             key = (item, r["warehouse"])
             oh = float(st.loc[key, "on_hand"]) if key in st.index else 0.0
-            com = float(st.loc[key, "committed"]) if key in st.index and pd.notna(st.loc[key, "committed"]) else 0.0
-            onord = float(st.loc[key, "on_order"]) if key in st.index and pd.notna(st.loc[key, "on_order"]) else 0.0
+            if oo_tot is not None:
+                com = float(oo_tot.get(key, 0.0))
+            else:
+                com = float(st.loc[key, "committed"]) if key in st.index and pd.notna(st.loc[key, "committed"]) else 0.0
+            if po_tot is not None:
+                onord = float(po_tot.get(key, 0.0))
+            else:
+                onord = float(st.loc[key, "on_order"]) if key in st.index and pd.notna(st.loc[key, "on_order"]) else 0.0
             ip = oh - com + onord
             info.append((r["warehouse"], oh - com, ip, r["reorder_point"], r["order_up_to"], r["forecast_per_period"]))
         for wa, avail_a, ip_a, rop_a, up_a, f_a in info:
@@ -260,5 +308,6 @@ def transfers(pol, tables, settings, transfer_days: float = 5.0) -> pd.DataFrame
                     q = float(np.floor(min(spare, need)))
                     if q >= 1:
                         rows.append({"item_code": item, "from_warehouse": wb, "to_warehouse": wa, "quantity": q,
-                                     "why": f"{wa} is {need:.0f} units below its reorder point; {wb} holds {spare:.0f} more than it needs."})
+                                     "why": f"{wa} is {need:.0f} unit{'s' if round(need) != 1 else ''} below its reorder point; "
+                                            f"{wb} holds {spare:.0f} more than it needs."})
     return pd.DataFrame(rows)

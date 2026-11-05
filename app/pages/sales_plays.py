@@ -19,7 +19,7 @@ if S is None or not need(S.plays, "sales plays"):
 p = S.plays
 kpi_row([(k, f"{(p['play'] == k).sum():,}", money(p.loc[p['play'] == k, 'value'].sum()), None) for k in p["play"].unique()])
 c1, c2, c3 = st.columns(3)
-play = c1.multiselect("Play", sorted(p["play"].unique()))
+play = c1.multiselect("Play", sorted(p["play"].dropna().astype(str).unique()))
 reps = sorted(p["sales_rep"].dropna().astype(str).unique()) if "sales_rep" in p else []
 rep = c2.multiselect("Sales rep", reps)
 seg = c3.multiselect("Segment", sorted(p["segment"].dropna().unique()) if "segment" in p else [])

@@ -21,6 +21,9 @@ class LeadTimeModel:
     default_days: float
     scorecard: pd.DataFrame
     open_pos: pd.DataFrame
+    stale_pos: pd.DataFrame | None = None   # open lines older than the cutoff, not counted as incoming
+    has_promises: bool = True               # False when PO promise dates are blank (FORTPRO)
+    has_po_lines: bool = False              # True when a PO file was supplied (then stock.on_order is not used)
 
     def samples(self, item, supplier, n=None):
         """Lead time samples in days for this item from this supplier, plus a short label of the source."""
@@ -57,8 +60,18 @@ class LeadTimeModel:
             return p, True
         wk = np.floor(remaining / 7).astype(int)
         p = np.bincount(np.clip(wk, 0, weeks), minlength=weeks + 1)[:weeks] / len(remaining)
-        late = pd.notna(po_row.get("promised_date")) and as_of > po_row["promised_date"] + pd.Timedelta(days=grace_days)
+        if pd.notna(po_row.get("promised_date")):
+            late = as_of > po_row["promised_date"] + pd.Timedelta(days=grace_days)
+        else:  # no promise date: late once it is older than 90% of this supplier's past lead times
+            late = age > float(np.quantile(lt, 0.9)) + grace_days
         return p, bool(late)
+
+    def days_overdue(self, po_row, as_of):
+        """Days late against the promise date, or against the usual (P90) lead time when there is no promise."""
+        if pd.notna(po_row.get("promised_date")):
+            return int((as_of - po_row["promised_date"]).days)
+        lt, _ = self.samples(po_row["item_code"], po_row["supplier_code"])
+        return int((as_of - po_row["po_date"]).days - float(np.quantile(lt, 0.9)))
 
 
 def _match_receipts(po: pd.DataFrame, gr: pd.DataFrame) -> pd.DataFrame:
@@ -77,11 +90,20 @@ def _match_receipts(po: pd.DataFrame, gr: pd.DataFrame) -> pd.DataFrame:
     lines = po[["po_entry", "line_num", "item_code", "supplier_code", "po_date"]]
     # 1) receipts that name their PO
     linked = gr[gr["po_entry"].isin(set(po["po_entry"]))]
-    a = linked.merge(lines[["po_entry", "line_num", "item_code"]], on=["po_entry", "item_code"], how="inner")
-    a = a[(a["po_line"] < 0) | (a["po_line"] == a["line_num"])]
-    a = a.sort_values(["_rid", "line_num"]).drop_duplicates("_rid")
-    # 2) receipts with no usable link: most recent earlier PO for the same item (and supplier when known)
-    un = gr[~gr["_rid"].isin(set(a["_rid"]))].drop(columns=["po_entry", "po_line"])
+    # 1a) exact link on PO key + PO line (SAP BaseEntry + BaseLine): one receipt line maps to one PO line
+    ex = linked[linked["po_line"] >= 0].merge(lines[["po_entry", "line_num", "item_code"]].rename(columns={"item_code": "_po_item"}),
+                                              left_on=["po_entry", "po_line"], right_on=["po_entry", "line_num"], how="inner")
+    ex = ex[ex["_po_item"] == ex["item_code"]].drop(columns="_po_item")
+    # 1b) receipts that name the PO but whose line is missing or does not match (for example a PO file without
+    #     line numbers): first line of that PO with the same item. One receipt line still maps to one PO line.
+    nl = linked[~linked["_rid"].isin(set(ex["_rid"]))]
+    b = nl.merge(lines[["po_entry", "line_num", "item_code"]], on=["po_entry", "item_code"], how="inner")
+    b = b.sort_values(["_rid", "line_num"]).drop_duplicates("_rid")
+    a = pd.concat([ex, b], ignore_index=True)
+    # 2) receipts with no PO key at all: most recent earlier PO for the same item (and supplier when known).
+    #    Receipts that name a PO line which does not match are left out rather than guessed.
+    named = gr["po_entry"].replace({"nan": np.nan, "None": np.nan, "<NA>": np.nan, "NaT": np.nan, "": np.nan}).notna()
+    un = gr[~gr["_rid"].isin(set(a["_rid"])) & ~named].drop(columns=["po_entry", "po_line"])
     parts = [a[["_rid", "po_entry", "line_num", "quantity", "receipt_date"]]]
     if len(un):
         cand = lines.dropna(subset=["po_date"]).sort_values("po_date")
@@ -125,7 +147,7 @@ def build(tables, items: pd.DataFrame, as_of: pd.Timestamp, settings) -> LeadTim
     po = tables.get("purchases")
     if po is None or len(po) == 0:
         empty = pd.DataFrame()
-        return LeadTimeModel(empty, {}, {}, settings_lt, default, empty, empty)
+        return LeadTimeModel(empty, {}, {}, settings_lt, default, empty, empty, stale_pos=empty, has_promises=False, has_po_lines=False)
     po = po[po["po_date"] <= as_of].copy()
     po = _match_receipts(po, tables.get("receipts"))
     po["lead_days"] = (po["wavg_receipt"] - po["po_date"]).dt.days
@@ -136,8 +158,17 @@ def build(tables, items: pd.DataFrame, as_of: pd.Timestamp, settings) -> LeadTim
     po["open_qty"] = po["open_qty"].fillna(0.0).clip(lower=0)
     closed = po["open_qty"] <= 0
     po["fill_rate"] = np.where(closed, (po["received_qty"] / po["quantity"].replace(0, np.nan)).clip(upper=1), np.nan)
-    po["days_late"] = (po["last_receipt"] - po["promised_date"]).dt.days
-    po["on_time"] = np.where(po["last_receipt"].notna() & po["promised_date"].notna(), po["days_late"] <= grace, np.nan)
+    has_prom = bool(po["promised_date"].notna().mean() >= 0.2)
+    if has_prom:
+        po["days_late"] = (po["last_receipt"] - po["promised_date"]).dt.days
+        po["on_time"] = np.where(po["last_receipt"].notna() & po["promised_date"].notna(), po["days_late"] <= grace, np.nan)
+    else:
+        # no real promise dates (FORTPRO: due date = PO date on 96% of lines). Reliability = arriving within the
+        # supplier's usual lead time: no more than 1.5 x its median lead time (plus the grace days).
+        med = po.groupby("supplier_code")["lead_days"].transform("median")
+        usual = med * 1.5 + grace
+        po["days_late"] = np.where(po["lead_days"].notna() & med.notna(), po["lead_days"] - usual, np.nan)
+        po["on_time"] = np.where(po["lead_days"].notna() & med.notna(), po["days_late"] <= 0, np.nan)
 
     hist = po.dropna(subset=["lead_days"])
     by_pair = {k: g["lead_days"].to_numpy(float) for k, g in hist.groupby(["item_code", "supplier_code"])}
@@ -160,6 +191,7 @@ def build(tables, items: pd.DataFrame, as_of: pd.Timestamp, settings) -> LeadTim
         px["n_sup"] = px.groupby("item_code")["supplier_code"].transform("count")
         px = px[px["n_sup"] > 1]
         px["ratio"] = px["unit_price"] / px["min_px"]
+    late_cut = grace if has_prom else 0
     for sup, g in po.groupby("supplier_code"):
         h = g.dropna(subset=["lead_days"])
         lt = h["lead_days"]
@@ -186,7 +218,8 @@ def build(tables, items: pd.DataFrame, as_of: pd.Timestamp, settings) -> LeadTim
             "P90 lead time (days)": float(lt.quantile(0.9)) if len(lt) else np.nan,
             "Lead time variability (CV)": lt_cv,
             "On time %": float(ot.mean()) if len(ot) else np.nan,
-            "Average days late when late": float(g.loc[g["days_late"] > grace, "days_late"].mean()) if (g["days_late"] > grace).any() else 0.0,
+            "Average days late when late": (float(g.loc[g["days_late"] > late_cut, "days_late"].mean())
+                                            if (g["days_late"] > late_cut).any() else 0.0),
             "Fill rate %": float(fr.mean()) if len(fr) else np.nan,
             "Price change vs prior year": trend,
             "Price vs cheapest option": float(pr.median()) if len(pr) else np.nan,
@@ -209,5 +242,13 @@ def build(tables, items: pd.DataFrame, as_of: pd.Timestamp, settings) -> LeadTim
         sc["Score (0-100)"] = (score * 100).round(0)
         sc["Grade"] = pd.cut(sc["Score (0-100)"], [-1, 55, 70, 85, 101], labels=["D", "C", "B", "A"]).astype(str)
         sc = sc.sort_values("Spend last 12 months", ascending=False, na_position="last").reset_index(drop=True)
+    if len(sc) and not has_prom:
+        sc = sc.rename(columns={"On time %": "Within usual lead time %", "Average days late when late": "Average days beyond usual when late"})
     open_pos = po[po["open_qty"] > 0].copy()
-    return LeadTimeModel(po, by_pair, by_sup, settings_lt, default, sc, open_pos)
+    stale_days = int(settings["data"].get("stale_open_days", 0) or 0)
+    stale = open_pos.iloc[0:0]
+    if stale_days > 0 and len(open_pos):
+        old = (as_of - open_pos["po_date"]).dt.days > stale_days
+        stale, open_pos = open_pos[old].copy(), open_pos[~old].copy()
+    return LeadTimeModel(po, by_pair, by_sup, settings_lt, default, sc, open_pos, stale_pos=stale,
+                         has_promises=has_prom, has_po_lines=True)

@@ -48,22 +48,38 @@ def abc_classes(fc_table, prep, split=(0.8, 0.95)):
     return cls, rev
 
 
+NO_SUPPLIER = "NO SUPPLIER"  # shown when an item has no supplier anywhere in the export
+
+
+def is_code(x) -> bool:
+    """True for a real code (not blank, None, NaN or the text 'nan')."""
+    if x is None:
+        return False
+    try:
+        if pd.isna(x):
+            return False
+    except (TypeError, ValueError):
+        pass
+    t = str(x).strip()
+    return t != "" and t.lower() not in ("nan", "none", "<na>")
+
+
 def choose_supplier_default(item, wh, lt_model, tables, items_idx):
-    """Supplier used for planning: preferred vendor, else most used on POs, else first sourcing option."""
+    """Supplier used for planning: preferred vendor, else most used on POs, else first sourcing option, else None."""
     pref = items_idx.get(item, {}).get("preferred_supplier")
-    if pref and isinstance(pref, str):
-        return pref
+    if is_code(pref):
+        return str(pref)
     po = lt_model.po_lines
     if len(po):
-        g = po[po["item_code"] == item]
+        g = po.loc[(po["item_code"] == item) & po["supplier_code"].map(is_code).astype(bool)]
         if len(g):
             gw = g[g["warehouse"] == wh] if "warehouse" in g else g
-            return (gw if len(gw) else g)["supplier_code"].mode().iloc[0]
+            return str((gw if len(gw) else g)["supplier_code"].mode().iloc[0])
     isup = tables.get("item_suppliers")
     if isup is not None and len(isup):
-        g = isup[isup["item_code"] == item]
+        g = isup.loc[(isup["item_code"] == item) & isup["supplier_code"].map(is_code).astype(bool)]
         if len(g):
-            return g["supplier_code"].iloc[0]
+            return str(g["supplier_code"].iloc[0])
     return None
 
 
@@ -194,10 +210,15 @@ def build(prep, fc, lt_model, tables, settings, seed=3, kappa=None, progress=Non
             x = np.sort(calibrated_samples(fc, cls, raw))
             week_path = np.asarray(path, float) * (7.0 / prep.period_days)
             occ_w = fc.sim_params[i]["occ"]
-            if prep.period_days != 7.0:  # monthly buckets: weekly mean and weekly chance of a sale
-                week_path = np.repeat(week_path, 4)
-                occ_w = 1 - (1 - min(occ_w, 0.999)) ** (7.0 / prep.period_days)
-            sim_in[i] = {"mean_week": week_path, "sizes": fc.sim_params[i]["sizes"],
+            sizes_w = fc.sim_params[i]["sizes"]
+            if prep.period_days != 7.0:  # monthly buckets: weekly mean, and weekly sale chance and sizes from weekly history
+                week_path = np.repeat(week_path, int(round(prep.period_days / 7.0)))
+                wk = prep.weekly[i, -104:] if getattr(prep, "weekly", None) is not None else None
+                if wk is not None and (wk > 0).any():
+                    occ_w, sizes_w = max(float((wk > 0).mean()), 1e-3), wk[wk > 0].astype(float)
+                else:
+                    occ_w = 1 - (1 - min(occ_w, 0.999)) ** (7.0 / prep.period_days)
+            sim_in[i] = {"mean_week": week_path, "sizes": sizes_w,
                          "occ": occ_w, "sigma": float(fc.level_sigma.get(cls, 0.25)),
                          "lt_weeks": np.asarray(lt, float) / 7.0, "q": q, "moq": moq, "mult": mult,
                          "cands": policysim.candidates(x),

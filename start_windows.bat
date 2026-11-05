@@ -15,7 +15,7 @@ if not exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -m pip install --upgrade pip
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt || (echo Package install failed. Check the internet connection and try again. & pause & exit /b 1)
 )
-if not exist "data\sample\INV1.csv" (
+if not exist "data\sample\sample_v2.txt" (
   echo Building the synthetic sample data...
   ".venv\Scripts\python.exe" tools\generate_synthetic.py
 )

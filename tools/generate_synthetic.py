@@ -59,7 +59,8 @@ def load_catalog(n_items: int | None, rng) -> pd.DataFrame:
     return p[["ItemCode", "ItemName", "TopCategory", "Subcategory", "PrimaryCategory", "Brand"]].reset_index(drop=True)
 
 
-def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: int = 650):
+def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: int = 650, promise_dates: bool = False):
+    """promise_dates=False leaves POR1.ShipDate blank, as in FORTPRO's export (no real promise dates)."""
     rng = np.random.default_rng(seed)
     out.mkdir(parents=True, exist_ok=True)
     items = load_catalog(n_items, rng)
@@ -151,7 +152,7 @@ def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: 
     cust["first_week"] = start_w
     first_dates = [START + pd.Timedelta(weeks=int(w)) + pd.Timedelta(days=int(rng.integers(0, 6))) for w in start_w]
     cust["CreateDate"] = pd.to_datetime(first_dates)
-    whs_of = np.where((cust["State"].isin(HOU_STATES)).to_numpy(), "HOU", "MIA")
+    whs_of = np.where((cust["State"].isin(HOU_STATES)).to_numpy(), "H1", "A1")
 
     # companions: items in the same subcategory are bought together
     sub_codes = items.groupby("Subcategory").indices
@@ -198,7 +199,7 @@ def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: 
     s["WhsCode"] = whs_of[s.c]
     # Houston also ships some Southeast orders when Miami is busy
     flip = rng.random(len(s)) < 0.05
-    s.loc[flip, "WhsCode"] = np.where(s.loc[flip, "WhsCode"] == "MIA", "HOU", "MIA")
+    s.loc[flip, "WhsCode"] = np.where(s.loc[flip, "WhsCode"] == "A1", "H1", "A1")
     # price changes once a year (+3%), customer tier discount, some deal noise
     yr = (s["DocDate"].dt.year - 2023).to_numpy()
     lp = list_price[s.it] * (1.03 ** yr)
@@ -211,7 +212,7 @@ def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: 
     s["Country"] = cust.Country.to_numpy()[s.c]
     s["CANCELED"] = np.where(rng.random(len(s)) < 0.01, "Y", "N")
     # export lines leave from Miami through the forwarder
-    s.loc[s["U_Channel"] == "Export", "WhsCode"] = "MIA"
+    s.loc[s["U_Channel"] == "Export", "WhsCode"] = "A1"
     s = s.sort_values(["DocDate", "DocEntry", "LineNum"]).reset_index(drop=True)
 
     # ------------------------------------------------------------- returns
@@ -223,10 +224,10 @@ def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: 
     ret["U_Reason"] = rng.choice(["Wrong part", "Damaged", "Not needed", "Warranty"], len(ret), p=[0.45, 0.2, 0.25, 0.1])
 
     # ------------------------------------------------------------- replenishment simulation (weekly)
-    whs = ["MIA", "HOU"]
+    whs = ["A1", "H1"]
     ok = s[s.CANCELED == "N"]
     week_idx = ((ok["DocDate"] - START).dt.days // 7).to_numpy()
-    wi = np.where(ok["WhsCode"].to_numpy() == "MIA", 0, 1)
+    wi = np.where(ok["WhsCode"].to_numpy() == "A1", 0, 1)
     D = np.zeros((n, 2, weeks))
     np.add.at(D, (ok.it.to_numpy(), wi, week_idx), ok["Quantity"].to_numpy())
     avg = D[:, :, :26].mean(axis=2) + D.mean(axis=2) * 0.5 + 0.02
@@ -349,6 +350,8 @@ def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: 
     ret[["DocDate", "ItemCode", "Quantity", "CardCode", "WhsCode", "LineTotal", "U_Reason"]].rename(
         columns={"U_Reason": "reason"}).to_csv(out / "RIN1.csv", index=False)
     stock.to_csv(out / "OITW.csv", index=False)
+    if not promise_dates:
+        po = po.assign(ShipDate=pd.NaT)
     po.to_csv(out / "POR1.csv", index=False)
     gr.to_csv(out / "PDN1.csv", index=False)
     sup[["CardCode", "CardName", "Country"]].to_csv(out / "suppliers.csv", index=False)
@@ -362,6 +365,7 @@ def generate(out: Path, n_items: int | None = None, seed: int = 7, n_customers: 
                        end_date=big.DocDate.date(), action="exclude",
                        note="SYNTHETIC example: one-off fleet project order, kept out of the forecast")]
                  ).to_csv(out / "events.csv", index=False)
+    (out / "sample_v2.txt").write_text("Sample format 2: warehouses A1 and H1, blank PO promise dates.\n", encoding="utf-8")
     (out / "README_SYNTHETIC.txt").write_text(
         "SYNTHETIC DATA. Not FORTPRO data.\n"
         "Item codes, names and categories come from the public fortpro.com catalog (crawl of Oct 10, 2026).\n"

@@ -9,7 +9,7 @@ import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from common import (show_df, AQUA, BLUE, MUTED, ORANGE, base_layout, download_csv, kpi_row, money, need, page_setup, pct,  # noqa: E402
+from common import (signed_money, show_df, AQUA, BLUE, MUTED, ORANGE, base_layout, download_csv, kpi_row, money, need, page_setup, pct,  # noqa: E402
                     require_results, show)
 
 page_setup("Stock levels: safety stock and reorder points")
@@ -27,11 +27,12 @@ tab1, tab2, tab3 = st.tabs(["Service versus inventory", "Proof on last year's de
 with tab1:
     same = r.budget.get("same_inventory", {})
     kpi_row([
-        ("Fill rate today (simulated)", pct(ps.get("current_fill_rate")), None, "Today's SAP MinStock and MaxStock, run through the same simulation."),
-        ("Fill rate, same inventory $", pct(same.get("fill_rate")), f"{(same.get('fill_rate', np.nan) - ps.get('current_fill_rate', np.nan)) * 100:+.1f} pts" if same else None,
+        ("Fill rate, today's SAP settings", pct(ps.get("current_fill_rate")), None,
+         "Today's SAP MinStock and MaxStock, run through the same simulation. The replay tab measures what they really delivered."),
+        ("Fill rate, AI, same inventory $", pct(same.get("fill_rate")), f"{(same.get('fill_rate', np.nan) - ps.get('current_fill_rate', np.nan)) * 100:+.1f} pts" if same else None,
          "Today's average inventory dollars, placed item by item where they serve the most revenue."),
-        ("Fill rate at your targets", pct(ps.get("fill_rate")), f"{(ps.get('fill_rate', np.nan) - ps.get('current_fill_rate', np.nan)) * 100:+.1f} pts", "Targets from Settings."),
-        ("Inventory at your targets", money(ps.get("avg_inventory_value")), f"{money(ps.get('avg_inventory_value', 0) - ps.get('current_avg_inventory_value', 0))} vs today",
+        ("Fill rate, AI at your targets", pct(ps.get("fill_rate")), f"{(ps.get('fill_rate', np.nan) - ps.get('current_fill_rate', np.nan)) * 100:+.1f} pts", "Targets from Settings."),
+        ("Inventory at your targets", money(ps.get("avg_inventory_value")), f"{signed_money(ps.get('avg_inventory_value', 0) - ps.get('current_avg_inventory_value', 0))} vs today",
          "Average stock value expected at the targets.", "off"),
     ])
     c = r.policy_curve
@@ -59,7 +60,7 @@ with tab1:
 with tab2:
     rp = r.replay or {}
     if rp.get("table") is None:
-        st.info(rp.get("note", "Replay needs weekly buckets, SAP MinStock and MaxStock, and a year of history."))
+        st.info(rp.get("note", "Replay needs SAP MinStock and MaxStock on the stock file and at least 65 weeks of sales history."))
     else:
         t = rp["table"]
         st.markdown(f"The last **{rp['weeks']} weeks of real demand** for **{rp['series']:,} items x warehouses** were replayed through each policy, "
@@ -83,9 +84,9 @@ with tab2:
 
 with tab3:
     c1, c2, c3, c4 = st.columns(4)
-    wh = c1.multiselect("Warehouse", sorted(P["warehouse"].unique()))
+    wh = c1.multiselect("Warehouse", sorted(P["warehouse"].dropna().astype(str).unique()))
     abc = c2.multiselect("ABC", ["A", "B", "C"])
-    cls = c3.multiselect("Demand pattern", sorted(P["demand_class"].unique()))
+    cls = c3.multiselect("Demand pattern", sorted(P["demand_class"].dropna().astype(str).unique()))
     q = c4.text_input("Search item code")
     d = P[P["forecast_per_period"] > 0].copy()
     if wh:
@@ -99,6 +100,8 @@ with tab3:
     cols = ["item_code", "warehouse", "abc", "demand_class", "supplier", "lead_time_median_days", "lead_time_p90_days",
             "forecast_per_period", "service_target", "reorder_point", "safety_stock", "order_qty", "order_up_to",
             "fill_rate_at_rop", "current_min", "current_max", "current_fill_rate", "safety_stock_value", "avg_inventory_value", "why"]
+    if "demand_class" in d:
+        d = d.assign(demand_class=d["demand_class"].str.capitalize())
     show_df(d[cols], hide_index=True, width="stretch", height=480, column_config={
         "service_target": st.column_config.NumberColumn("Target", format="percent"),
         "fill_rate_at_rop": st.column_config.NumberColumn("Fill at new level", format="percent"),
