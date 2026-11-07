@@ -200,8 +200,9 @@ def build(prep, fc, lt_model, tables, settings, seed=3, kappa=None, progress=Non
             co = h_unit * cycle_years
             target = float(np.clip(cu / (cu + co), lo_b, hi_b))
         cur = st_idx.get((item, wh), {})
-        cur_min, cur_max = cur.get("min_stock"), cur.get("max_stock")
-        has_cur = cur_min is not None and pd.notna(cur_min) and cur_max is not None and pd.notna(cur_max)
+        lv = sap_levels(cur.get("min_stock"), cur.get("max_stock"))
+        has_cur = lv is not None
+        cur_min, cur_max = lv if has_cur else (np.nan, np.nan)
         live = mean_per > 0 and cls != "inactive"
         if live:
             lt_draw = np.clip(rng.choice(lt, n_sims) + rng.uniform(-1.5, 1.5, n_sims), 1, None) + review
@@ -308,6 +309,29 @@ def build(prep, fc, lt_model, tables, settings, seed=3, kappa=None, progress=Non
     return PolicyResult(table=pol, curve=curve, sim_cache=cache, measure=measure, kappa=kappa)
 
 
+def sap_levels(mn, mx):
+    """Today's SAP MinStock / MaxStock for one item and warehouse, or None when they are not set.
+    SAP Business One stores 0 / 0 (or blank) when nobody maintains them, so 0 / 0 means 'not set',
+    not 'keep no stock'. A minimum with no maximum orders up to the minimum."""
+    mn = float(mn) if mn is not None and pd.notna(mn) else 0.0
+    mx = float(mx) if mx is not None and pd.notna(mx) else 0.0
+    if mn <= 0 and mx <= 0:
+        return None
+    mn = max(mn, 0.0)
+    return mn, max(mx, mn)
+
+
+def sap_coverage(t: pd.DataFrame) -> dict:
+    """How many planned items have SAP min / max set, by count and by revenue."""
+    live = t["forecast_per_period"] > 0
+    has = live & t["current_min"].notna()
+    w = t["revenue_last_52"].clip(lower=0)
+    return {"live": int(live.sum()), "set": int(has.sum()),
+            "share": float(has.sum() / max(live.sum(), 1)),
+            "revenue_share": float(w[has].sum() / max(w[live].sum(), 1e-9)),
+            "meaningful": bool(has.sum() >= 30 and w[has].sum() / max(w[live].sum(), 1e-9) >= 0.5)}
+
+
 def summary(pol: PolicyResult) -> dict:
     t = pol.table
     live = t["forecast_per_period"] > 0
@@ -321,6 +345,7 @@ def summary(pol: PolicyResult) -> dict:
         "current_safety_stock_value": float(t.loc[has, "current_safety_stock_value"].sum()) if has.any() else np.nan,
         "current_avg_inventory_value": float(t.loc[has, "current_avg_inventory_value"].sum()) if has.any() else np.nan,
         "current_fill_rate": float((t.loc[has, "current_fill_rate"] * w[has]).sum() / max(w[has].sum(), 1e-9)) if has.any() else np.nan,
+        "on_hand_value": float((t.loc[live, "on_hand"].clip(lower=0) * t.loc[live, "unit_cost"]).sum()),
     }
     return out
 
@@ -386,10 +411,10 @@ def _explain(r) -> str:
         return "No demand expected, so no safety stock is held. Consider phasing out remaining stock."
     m = "fill rate" if r.service_measure == "fill_rate" else "cycle service"
     parts = [f"Target {r.service_target:.0%} {m} ({r.abc} item, {r.demand_class} demand)."]
-    parts.append(f"Lead time from {r.supplier or 'unknown supplier'}: median {r.lead_time_median_days:.0f} days, "
-                 f"1 in 10 orders takes {r.lead_time_p90_days:.0f}+ days ({r.lead_time_source}).")
+    parts.append(f"Lead time from {r.supplier or 'unknown supplier'}: median {r.lead_time_median_days:,.0f} days, "
+                 f"1 in 10 orders takes {r.lead_time_p90_days:,.0f}+ days ({r.lead_time_source}).")
     parts.append(f"Average demand over lead time plus review is {r.mean_lead_time_demand:.1f} units. A reorder point of "
-                 f"{r.reorder_point:.0f} meets the target, so safety stock is {r.safety_stock:.0f} units.")
+                 f"{r.reorder_point:,.0f} meets the target, so safety stock is {r.safety_stock:,.0f} unit{'s' if round(r.safety_stock) != 1 else ''}.")
     if pd.notna(r.current_fill_rate):
-        parts.append(f"Today's SAP minimum of {r.current_min:.0f} gives about {r.current_fill_rate:.0%} fill rate.")
+        parts.append(f"Today's SAP minimum of {r.current_min:,.0f} gives about {r.current_fill_rate:.0%} fill rate.")
     return " ".join(parts)

@@ -334,3 +334,50 @@ def test_items_with_no_supplier_anywhere(tmp_path, small):
     assert len(nos) and not nos["approve"].any() and nos["why"].str.contains("No supplier on file").all()
     h, _ = purchasing.to_dtw(r, res.as_of)
     assert "NO SUPPLIER" not in h
+
+
+def test_sap_min_max_zero_means_not_set():
+    from engine.inventory import sap_levels
+    assert sap_levels(0, 0) is None
+    assert sap_levels(None, float("nan")) is None
+    assert sap_levels(5, 0) == (5.0, 5.0)  # a minimum with no maximum orders up to the minimum
+    assert sap_levels(2, 10) == (2.0, 10.0)
+
+
+def test_unmaintained_sap_min_max_uses_on_hand_for_comparisons(tmp_path, small):
+    for f in small.iterdir():
+        shutil.copy(f, tmp_path / f.name)
+    w = pd.read_csv(tmp_path / "OITW.csv", dtype=str)
+    keep = w.index[:5]  # SAP min / max kept on a handful of rows only; the rest are 0 / 0 as in FORTPRO's export
+    for c in ("MinStock", "MaxStock"):
+        w.loc[~w.index.isin(keep), c] = "0"
+    w.to_csv(tmp_path / "OITW.csv", index=False)
+    st = fast_settings()
+    st["forecast"]["bucket"] = "M"
+    res = pipeline.run(tmp_path, st, save=False)
+    assert not res.errors, res.errors
+    cov = res.sap_coverage
+    assert cov["set"] <= 5 and not cov["meaningful"]
+    t = res.policy
+    live = t["forecast_per_period"] > 0
+    assert t.loc[live, "current_min"].notna().sum() == cov["set"]
+    onhand = float((t.loc[live, "on_hand"].clip(lower=0) * t.loc[live, "unit_cost"]).sum())
+    assert res.policy_summary["on_hand_value"] == pytest.approx(onhand)
+    same = res.budget["same_inventory"]
+    assert same["basis"] == "on_hand" and same["budget"] == pytest.approx(onhand) and same["spent"] <= onhand + 1e-6
+
+
+def test_replay_runs_without_sap_min_max(tmp_path, small):
+    """With SAP min / max not maintained, the proof tab still replays every planned item (AI vs a simple rule)."""
+    for f in small.iterdir():
+        shutil.copy(f, tmp_path / f.name)
+    w = pd.read_csv(tmp_path / "OITW.csv", dtype=str)
+    w[["MinStock", "MaxStock"]] = "0"
+    w.to_csv(tmp_path / "OITW.csv", index=False)
+    st = fast_settings()
+    st["forecast"]["bucket"] = "M"
+    res = pipeline.run(tmp_path, st, save=False)
+    rp = res.replay
+    assert rp.get("basis") == "simple" and rp["series"] > 0, rp.get("note")
+    assert list(rp["table"].columns) == ["Simple rule: average demand, no safety stock", "AI planner"]
+    assert "Predicted fill, AI settings" in rp["model_check"].columns

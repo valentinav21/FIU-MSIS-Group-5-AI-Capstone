@@ -58,6 +58,7 @@ class Results:
     history_end: pd.Timestamp | None = None
     first_forecast_start: pd.Timestamp | None = None
     replay: dict = field(default_factory=dict)
+    sap_coverage: dict = field(default_factory=dict)
     sales: sales.SalesResult | None = None
     customers_master: pd.DataFrame = field(default_factory=pd.DataFrame)
 
@@ -155,15 +156,17 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
         res.policy_summary = sm
         t = Pol.table
         live = (t["forecast_per_period"] > 0).to_numpy()
-        has_cur = live & t["current_avg_inventory_value"].notna().to_numpy()
-        # today's inventory dollars: simulated average stock under today's SAP settings, plus the AI
-        # plan for items that have no SAP settings, so the comparison covers the same items
-        inv_today = float(t.loc[has_cur, "current_avg_inventory_value"].sum() + t.loc[live & ~has_cur, "avg_inventory_value"].sum())
+        res.sap_coverage = inventory.sap_coverage(t)
+        # today's inventory dollars: the stock on hand right now (stock file x unit cost) on the planned items.
+        # A real number, so the comparison does not depend on SAP min / max being maintained.
+        inv_today = sm["on_hand_value"]
+        has_cur = live & (inv_today > 0)
         ss_today = sm.get("current_safety_stock_value", np.nan)
         b_inv = b_ss = None
         if has_cur.any():
             b_inv = inventory.optimize_budget(Pol, inv_today, basis="inventory")
-            res.budget["same_inventory"] = {"budget": inv_today, "fill_rate": b_inv.attrs["fill_rate"]}
+            res.budget["same_inventory"] = {"budget": inv_today, "fill_rate": b_inv.attrs["fill_rate"],
+                                            "spent": b_inv.attrs["spent"], "basis": "on_hand"}
             res.budget["same_inventory_table"] = b_inv
         if np.isfinite(ss_today):
             b_ss = inventory.optimize_budget(Pol, ss_today, basis="safety_stock")
@@ -172,8 +175,11 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
         chosen = None
         if bm == "inventory" and b_inv is not None:
             chosen = b_inv
-        elif bm == "current" and b_ss is not None:
+        elif bm == "current" and b_ss is not None and res.sap_coverage.get("meaningful"):
             chosen = b_ss
+        elif bm == "current":
+            res.notes.append("Budget mode 'today's safety stock dollars' needs SAP MinStock / MaxStock on most items; "
+                             "they are not set, so the service targets were used.")
         elif bm not in ("off", "", "none", "inventory", "current"):
             try:
                 chosen = inventory.optimize_budget(Pol, float(bm), basis="inventory")
@@ -200,10 +206,11 @@ def run(folder: str | None = None, settings: dict | None = None, progress=None, 
         if T is not None:
             res.transfers = T
         extra = {}
-        if b_inv is not None and chosen is None:
+        use_sap = bool(res.sap_coverage.get("meaningful", True))
+        if b_inv is not None and chosen is None and use_sap:
             s_b = np.where(live, b_inv["budget_reorder_point"].to_numpy(float), Pol.table["reorder_point"].to_numpy(float))
-            extra["AI planner, same inventory dollars as today"] = (s_b, s_b + Pol.table["order_qty"].to_numpy(float))
-        Rp = _step(res, "Replaying last year of demand", lambda: replay.run(P, Pol, extra=extra), progress, 0.84)
+            extra["AI planner, today's on-hand dollars"] = (s_b, s_b + Pol.table["order_qty"].to_numpy(float))
+        Rp = _step(res, "Replaying last year of demand", lambda: replay.run(P, Pol, extra=extra, use_sap=use_sap), progress, 0.84)
         if Rp is not None:
             res.replay = Rp
 

@@ -62,13 +62,24 @@ def workbook(res) -> bytes:
     summ = [("Created", res.created), ("Data folder", res.data_folder), ("Data as of", str(res.as_of.date()) if res.as_of is not None else ""),
             ("Planning bucket", "Weekly" if res.bucket == "W" else "Monthly")]
     ps = res.policy_summary or {}
+    cov = getattr(res, "sap_coverage", None) or {}
+    sap_ok = bool(cov.get("meaningful", True))
     if ps:
         summ += [("Items x warehouses planned", ps.get("planned_series")),
                  ("Target fill rate (revenue weighted)", ps.get("fill_rate")),
-                 ("Today's SAP settings fill rate (simulated)", ps.get("current_fill_rate")),
+                 ("Average inventory value, AI plan", ps.get("avg_inventory_value")),
                  ("Safety stock value, AI plan", ps.get("safety_stock_value")),
-                 ("Safety stock value, today's SAP minimums", ps.get("current_safety_stock_value"))]
-    if res.budget.get("same_as_today"):
+                 ("Stock on hand today, planned items (at cost)", ps.get("on_hand_value"))]
+        if cov:
+            summ.append(("Planned items with SAP min / max set", f"{cov['set']:,} of {cov['live']:,} ({cov['revenue_share']:.1%} of revenue)"))
+        if sap_ok:
+            summ += [("Today's SAP settings fill rate (simulated)", ps.get("current_fill_rate")),
+                     ("Safety stock value, today's SAP minimums", ps.get("current_safety_stock_value"))]
+        else:
+            summ.append(("Today's SAP settings", "Not compared: SAP min / max are 0 / 0 (not set) on most items"))
+    if res.budget.get("same_inventory"):
+        summ.append(("Fill rate with today's on-hand dollars, AI allocation", res.budget["same_inventory"]["fill_rate"]))
+    if res.budget.get("same_as_today") and sap_ok:
         summ.append(("Fill rate with today's safety stock budget, AI allocation", res.budget["same_as_today"]["fill_rate"]))
     if len(res.po_recs):
         summ += [("PO lines recommended", len(res.po_recs)), ("PO value recommended", float(res.po_recs["line_total"].sum()))]

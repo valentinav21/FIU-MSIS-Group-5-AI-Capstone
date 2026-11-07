@@ -5,6 +5,7 @@ backgroundColor = "#fcfcfb"
 secondaryBackgroundColor = "#f0efec"
 textColor = "#0b0b0b"
 font = "sans serif"
+baseFontSize = 17  # one step larger than the default 16 for readability (grids scale with it)
 
 [server]
 headless = true

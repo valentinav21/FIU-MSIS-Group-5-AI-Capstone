@@ -16,6 +16,11 @@ from engine.probabilistic import simulate_periods  # noqa: E402
 page_setup("Demand forecast")
 r = require_results()
 monthly = r.bucket == "M"
+
+
+def _short(v):
+    """Compact count for a card: 22.1K, 1.25M."""
+    return f"{v / 1e6:,.2f}M" if v >= 1e6 else (f"{v / 1e3:,.1f}K" if v >= 1e4 else f"{v:,.0f}")
 U = "month" if monthly else "week"
 st.markdown('<p class="fp-note">Methods are tested on rolling windows the model never saw, from a library built for spare parts: '
             'moving average, exponential smoothing, Croston, SBA, TSB, temporal aggregation, a combination, a trended yearly '
@@ -33,25 +38,33 @@ with tab2:
         im_ai, im_b = f"Units error, item x {U}, AI", f"Units error, item x {U}, baseline"
         if im_ai in acc:
             dd = allr[im_ai] - allr[im_b]
+            win = f"{int(r.settings['forecast'].get('backtest_horizon', 3))} {U}"
             kpi_row([(f"Units error per item and {U}, AI", f"{allr[im_ai]:.2f}",
                       f"{abs(dd):.3f} {'lower' if dd < 0 else 'higher'} than baseline" if abs(dd) >= 0.0005 else "same as baseline",
                       f"Sum of |actual - forecast| over item x {U} cells, divided by actual units: the measure the team scores SAP with "
-                      "(SAP 1.05, flat 12-month average 0.86 on FORTPRO data). Lower is better."),
+                      "(SAP 1.05, flat 12-month average 0.86 on FORTPRO data). Measured here on the latest months the model did not see. "
+                      "Lower is better."),
                      (f"Units error per item and {U}, baseline", f"{allr[im_b]:.2f}", None,
-                      "Flat average of the last 12 months." if monthly else "13-week moving average.")])
-        win = f"{int(r.settings['forecast'].get('backtest_horizon', 3))} {U}"
-        dw = (allr["Error (WAPE) AI"] - allr["Error (WAPE) baseline"]) * 100
-        kpi_row([("Forecast error, AI (WAPE)", pct(allr["Error (WAPE) AI"]),
-                  f"{abs(dw):.1f} pts {'lower' if dw < 0 else 'higher'} than baseline" if abs(dw) >= 0.05 else "same as baseline",
-                  f"Absolute error of {win} totals, weighted by revenue. Lower is better.", "off"),
-                 ("Forecast error, baseline", pct(allr["Error (WAPE) baseline"]), None,
-                  "Flat 12-month average, the simple benchmark the team scores against." if monthly else "13-week moving average."),
-                 ("Bias, AI", pct(allr["Bias AI"]), None, "Positive means forecasts ran high."),
-                 ("Bias, baseline", pct(allr["Bias baseline"]), None, None)])
+                      "Flat average of the last 12 months." if monthly else "13-week moving average."),
+                     ("Forecast error, AI (WAPE)", pct(allr["Error (WAPE) AI"]),
+                      f"baseline {pct(allr['Error (WAPE) baseline'])}",
+                      f"Absolute error of {win} totals, weighted by revenue. Lower is better.", "off"),
+                     ("Bias, AI", pct(allr["Bias AI"]), f"baseline {pct(allr['Bias baseline'])}",
+                      "Total forecast minus total actual, as a share of actual. Negative means forecasts ran low.", "off")])
+        else:
+            win = f"{int(r.settings['forecast'].get('backtest_horizon', 3))} {U}"
+            kpi_row([("Forecast error, AI (WAPE)", pct(allr["Error (WAPE) AI"]), f"baseline {pct(allr['Error (WAPE) baseline'])}",
+                      f"Absolute error of {win} totals, weighted by revenue. Lower is better.", "off"),
+                     ("Bias, AI", pct(allr["Bias AI"]), f"baseline {pct(allr['Bias baseline'])}",
+                      "Total forecast minus total actual, as a share of actual. Negative means forecasts ran low.", "off")])
         acc = acc.assign(**{"Demand class": acc["Demand class"].str.capitalize()})
         show_df(acc, hide_index=True, width="stretch",
-                     column_config={c: st.column_config.NumberColumn(format="percent" if "Units error" not in c else "%.2f")
-                                    for c in acc.columns if c not in ("Demand class", "Series")})
+                     column_config={**{c: st.column_config.NumberColumn(format="percent" if "Units error" not in c else "%.2f")
+                                       for c in acc.columns if c not in ("Demand class", "Series")},
+                                    **({"Error reduction": st.column_config.NumberColumn(
+                                        "WAPE cut vs baseline", format="percent",
+                                        help="How much lower the AI's WAPE is than the baseline's, as a share of the baseline")}
+                                       if "Error reduction" in acc.columns else {})})
         st.caption(f"Error on intermittent items looks high for every method because single {U}s are often zero. What matters "
                    "for stock is the range, checked next.")
     cal = r.calibration
@@ -60,13 +73,15 @@ with tab2:
                     "forecast's 80th, 90th and 95th percentile. Calibrated values should sit close to 80%, 90% and 95%.")
         cal = cal.assign(**{"Demand class": cal["Demand class"].str.capitalize()}) if "Demand class" in cal else cal
         show_df(cal, hide_index=True, width="stretch",
-                     column_config={c: st.column_config.NumberColumn(format="percent") for c in cal.columns if "Hit rate" in c})
+                     column_config={**{c: st.column_config.NumberColumn(format="percent") for c in cal.columns if "Hit rate" in c},
+                                    "Error spread": st.column_config.NumberColumn(format="%.2f",
+                                        help="Size of the forecast level error the simulator adds for this pattern, learned from the test windows")})
     mix = ft["method"].value_counts().reset_index()
     mix.columns = ["Method", "Items x warehouses"]
     cls = ft["demand_class"].str.capitalize().value_counts().reset_index()
     cls.columns = ["Demand pattern", "Items x warehouses"]
     st.markdown("**Which methods won, and how demand is spread across patterns**")
-    c1, c2 = st.columns([3, 2])
+    _, c1, c2, _ = st.columns([0.6, 1, 1, 0.6])  # the two small tables sit side by side in the middle
     with c1:
         show_df(mix, column_config={"Method": st.column_config.TextColumn(width="large"),
                                     "Items x warehouses": st.column_config.NumberColumn(format="%,d", width="small")})
@@ -125,7 +140,7 @@ with tab1:
     tot = cum[:, nn - 1]
     tq = np.quantile(calibrated_samples(_F, row.demand_class, tot), [0.1, 0.5, 0.9])
     kpi_row([(f"Next {nn} {U}s, expected total", f"{r.forecast_path[i][:nn].sum():,.0f}", None, "Sum of the average forecast."),
-             (f"Likely range, next {nn}", f"{tq[0]:,.0f} to {tq[2]:,.0f}", None, "Calibrated 10th to 90th percentile of total demand."),
+             (f"Likely range, next {nn}", f"{_short(tq[0])} to {_short(tq[2])}", None, "Calibrated 10th to 90th percentile of total demand."),
              ("Last 3 months actual" if monthly else "Last 13 weeks actual", f"{row.last_13_actual:,.0f}", None, None),
              ("Last 12 months actual" if monthly else "Last 52 weeks actual", f"{row.last_52_actual:,.0f}", None, None)])
     cols = ["item_code", "warehouse", "demand_class", "at_risk", "method", "forecast_next_3", "forecast_next_4", "forecast_next_6",
@@ -133,5 +148,15 @@ with tab1:
             "last_13_actual", "last_52_actual", "periods_since_sale", "adi", "cv2", "why"]
     cols = [c for c in cols if c in ft.columns]
     with st.expander("All forecasts (table and download)"):
-        show_df(ft[cols], hide_index=True, width="stretch", height=420)
+        show_df(ft[cols].assign(demand_class=ft["demand_class"].str.capitalize()), hide_index=True, width="stretch", height=420,
+                column_config={"last_13_actual": st.column_config.NumberColumn("Last 3 months actual" if monthly else "Last 13 weeks actual", format="%,.0f"),
+                               "last_52_actual": st.column_config.NumberColumn("Last 12 months actual" if monthly else "Last 52 weeks actual", format="%,.0f"),
+                               "periods_since_sale": st.column_config.NumberColumn(f"{U.capitalize()}s since last sale", format="%d"),
+                               "at_risk": st.column_config.CheckboxColumn("At risk", help="No sale for 12 months or more, not yet dead stock"),
+                               "adi": st.column_config.NumberColumn(f"ADI (avg {U}s between sales)", format="%.1f",
+                                    help=f"Average demand interval: how many {U}s pass, on average, between {U}s with a sale. "
+                                         f"1 = sells every {U}; 4 = about once every 4 {U}s. 1.32 or more counts as intermittent."),
+                               "cv2": st.column_config.NumberColumn("CV² (order size swing)", format="%.2f",
+                                    help="Squared coefficient of variation of order sizes, counting only periods with a sale. "
+                                         "Near 0 = about the same quantity each time; 0.49 or more = sizes vary a lot (erratic or lumpy).")})
         download_csv(ft[cols], "forecasts.csv")

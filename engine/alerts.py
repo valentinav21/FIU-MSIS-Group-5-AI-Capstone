@@ -145,23 +145,23 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
             risk = "Stockout risk"
             # root causes, strongest evidence first
             for po_e, days, q in late_pos:
-                causes.append(f"PO {po_e} for {q:.0f} units is {days} days past its promised date" if lt_model.has_promises else
-                              f"PO {po_e} for {q:.0f} units is open {days} days longer than 9 in 10 past orders from this supplier took")
+                causes.append(f"PO {po_e} for {q:,.0f} units is {days} days past its promised date" if lt_model.has_promises else
+                              f"PO {po_e} for {q:,.0f} units is open {days} days longer than 9 in 10 past orders from this supplier took")
             slow = [n for n in po_notes if n[2] > first]
             if slow and not late_pos:
-                causes.append(f"Next PO ({slow[0][0]}, {slow[0][1]:.0f} units) most likely lands in week {slow[0][2] + 1}, after the risk starts in week {first + 1}")
+                causes.append(f"Next PO ({slow[0][0]}, {slow[0][1]:,.0f} units) most likely lands in week {slow[0][2] + 1}, after the risk starts in week {first + 1}")
             recent = M[i, -4:].sum()
             prior = fc.path[i][:4].sum()
             if prior > 0 and recent > 2 * prior and recent >= 3:
-                causes.append(f"Demand spike: {recent:.0f} units sold in the last 4 periods vs {prior:.1f} forecast")
+                causes.append(f"Demand spike: {recent:,.0f} units sold in the last 4 {unit} vs {prior:,.1f} forecast for the next 4")
             if due.sum() > 0 and due.sum() >= on_hand:
-                causes.append(f"Open customer orders of {due.sum():.0f} units exceed the {on_hand:.0f} units on hand")
+                causes.append(f"Open customer orders of {due.sum():,.0f} units exceed the {on_hand:,.0f} units on hand")
             elif due.sum() > 0 and due.sum() >= on_hand * 0.5:
-                causes.append(f"Open customer orders of {due.sum():.0f} units take {due.sum() / on_hand:.0%} of the {on_hand:.0f} on hand")
+                causes.append(f"Open customer orders of {due.sum():,.0f} units take {due.sum() / on_hand:.0%} of the {on_hand:,.0f} on hand")
             if po_qty <= 0 and ip_now <= rop:
-                causes.append(f"No open PO and stock position {ip_now:.0f} is at or below the reorder point {rop:.0f}")
+                causes.append(f"No open PO and stock position {ip_now:,.0f} is at or below the reorder point {rop:,.0f}")
             elif ip_now <= rop:
-                causes.append(f"Stock position {ip_now:.0f} including open POs is below the reorder point {rop:.0f}")
+                causes.append(f"Stock position {ip_now:,.0f} including open POs is below the reorder point {rop:,.0f}")
             ot = sup_ot.get(pr["supplier"])
             if ot is not None and np.isfinite(ot) and ot < 0.7:
                 causes.append(f"Supplier {pr['supplier']} delivers on time only {ot:.0%} of the time" if lt_model.has_promises else
@@ -179,20 +179,20 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
             if prev > 0 and last13 < 0.5 * prev:
                 causes.append(f"Demand dropped: {last13:.1f} per {unit[:-1]} in the last {q_} {unit} vs {prev:.1f} before")
             if po_qty > 0:
-                causes.append(f"{po_qty:.0f} units still on open POs")
+                causes.append(f"{po_qty:,.0f} units still on open POs")
             if float(pr["moq"]) > 13 * weekly:
-                causes.append(f"Minimum order of {pr['moq']:.0f} is more than 13 weeks of demand")
+                causes.append(f"Minimum order of {pr['moq']:,.0f} is more than 13 weeks of demand")
             if not causes:
-                causes.append(f"Stock covers about {cover_end:.0f} weeks against a {over_w:.0f} week limit")
+                causes.append(f"Stock covers about {cover_end:,.0f} weeks against a {over_w:,.0f} week limit")
             action = "Pause or cut open POs, move stock to the other warehouse, or offer it to customers who buy this line"
         elif weekly <= 0 and on_hand > 0 and on_hand * cost > 100:
             risk = "Dead stock"
-            causes.append(f"No sale for {int(since[i])} {unit}; {on_hand:.0f} units worth ${on_hand * cost:,.0f} on hand")
+            causes.append(f"No sale for {int(since[i])} {unit}; {on_hand:,.0f} units worth ${on_hand * cost:,.0f} on hand")
             action = "Review for markdown, return to supplier, or export channel"
         elif since[i] >= at_risk_p and on_hand > 0 and on_hand * cost > 100:
             risk = "At-risk stock"
             causes.append(f"No sale for {int(since[i])} {unit} (at-risk after {at_risk_p}, dead after "
-                          f"{settings['forecast'].get('dead_stock_months', 24)} months); {on_hand:.0f} units worth ${on_hand * cost:,.0f} on hand")
+                          f"{settings['forecast'].get('dead_stock_months', 24)} months); {on_hand:,.0f} units worth ${on_hand * cost:,.0f} on hand")
             action = "Stop reordering, and offer it to customers who bought it before"
         if risk is None:
             continue
@@ -230,7 +230,7 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=5, n_sims=500):
                                       (0.0 if lt_model.has_po_lines else float(cur.get("on_order") or 0)),
                        "next_po_eta": None, "forecast_next_8_weeks": 0.0,
                        "projected_end_stock_median": oh, "reorder_point": 0.0,
-                       "root_causes": f"No sale at this warehouse since the history starts; {oh:.0f} units worth ${val:,.0f} on hand",
+                       "root_causes": f"No sale at this warehouse since the history starts; {oh:,.0f} units worth ${val:,.0f} on hand",
                        "suggested_action": "Review for markdown, return to supplier, transfer, or export channel",
                        "abc": "C", "supplier": None}
                 for c in week_cols:

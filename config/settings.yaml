@@ -43,7 +43,7 @@ inventory:
   # Service target by ABC class (A = top 80% of revenue)
   service_level: {A: 0.98, B: 0.96, C: 0.92, new: 0.90}
   # Budget mode: off       = use the service targets above
-  #              inventory = keep today's average inventory dollars and place them where they serve the most revenue
+  #              inventory = keep today's stock-on-hand dollars and place them where they serve the most revenue
   #              current   = keep today's safety stock dollars and place them the same way
   #              a number such as 1500000 = average inventory dollars to spend that way
   budget_mode: "off"

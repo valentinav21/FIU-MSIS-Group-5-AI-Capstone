@@ -5,15 +5,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import plotly.graph_objects as go  # noqa: E402
+import numpy as np  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from common import show_df, BLUE, base_layout, download_csv, kpi_row, money, need, page_setup, require_results, show  # noqa: E402
+from common import Strip, show_df, BLUE, base_layout, download_csv, kpi_row, money, need, page_setup, require_results, show  # noqa: E402
 
 page_setup("Risk alerts, 1 to 8 weeks")
 st.markdown('<p class="fp-note">Each item and warehouse is projected week by week across hundreds of simulated futures: '
             'stock on hand, minus promised customer orders, minus simulated demand, plus open POs arriving on dates drawn '
             "from that supplier's real behaviour. Root causes come from the evidence behind each risk.</p>", unsafe_allow_html=True)
 r = require_results()
+if r.as_of is not None:
+    st.caption(f"Week 1 starts on the data date, {r.as_of:%b %d, %Y}. Run the analysis on a fresh export to move the weeks forward.")
 a = r.alerts
 if need(a, "risk alerts"):
     so = a[a["risk"] == "Stockout risk"]
@@ -48,17 +51,36 @@ if need(a, "risk alerts"):
                                    colorbar=dict(title="Chance", tickformat=".0%")))
         fig.update_yaxes(autorange="reversed")
         show(base_layout(fig, "Chance of running out by week, 25 most urgent", height=520, legend=False))
-    cols = ["severity", "risk", "item_code", "warehouse", "abc", "first_risk_week", "max_stockout_probability", "revenue_at_risk",
-            "excess_value", "on_hand", "open_customer_orders", "open_po_qty", "next_po_eta", "forecast_next_8_weeks",
-            "root_causes", "suggested_action", "supplier"] + wk
+    # the explanation comes right after the item, so it can be read without scrolling sideways
+    # compact columns so the whole table fits: one dollar column (revenue at risk for stockouts, stock value for
+    # overstock, dead and at-risk stock) and the eight weekly chances in one column
+    d = d.copy()
+    d["value_at_stake"] = np.where(d["risk"] == "Stockout risk", d["revenue_at_risk"], d["excess_value"])
+    if wk:
+        # one shaded square per week (same colors as the heat map above); the download keeps W1 to W8 as numbers
+        d["chance_by_week"] = [Strip(row) for row in d[wk].fillna(0).to_numpy().tolist()]
+    cols = ["severity", "risk", "item_code", "warehouse", "root_causes", "suggested_action", "value_at_stake", "max_stockout_probability",
+            "first_risk_week", "chance_by_week", "on_hand", "open_customer_orders", "open_po_qty",
+            "forecast_next_8_weeks", "supplier"]  # the next PO's timing is in Root causes; the date is in the download
+    cols = [c for c in cols if c in d.columns]
     cfg = {"max_stockout_probability": st.column_config.ProgressColumn("Max chance", format="percent", min_value=0, max_value=1),
-           "revenue_at_risk": st.column_config.NumberColumn("Revenue at risk", format="$%,.0f"),
+           "first_risk_week": st.column_config.NumberColumn("First risk week", format="%d"),
+           "open_customer_orders": st.column_config.NumberColumn("Customer orders", format="%,.0f"),
+           "open_po_qty": st.column_config.NumberColumn("On order", format="%,.0f"),
+           "on_hand": st.column_config.NumberColumn("On hand", format="%,.0f"),
+           "warehouse": st.column_config.TextColumn("Whs"),
+           "value_at_stake": st.column_config.NumberColumn("$ at stake", format="$%,.0f",
+                                                           help="Revenue at risk for stockouts; stock value for overstock, dead and at-risk stock"),
+           "chance_by_week": st.column_config.TextColumn("Weekly chance of running out (%)",
+                                                         help="One square per week: weeks 1 to 4 on the top row, 5 to 8 below. "
+                                                              "Darker means more likely to run out. Hover a square to see its week."),
            "excess_value": st.column_config.NumberColumn("Excess value", format="$%,.0f"),
            "root_causes": st.column_config.TextColumn("Root causes", width="large"),
            "suggested_action": st.column_config.TextColumn("Suggested action", width="medium"),
            "next_po_eta": st.column_config.DateColumn("Next PO likely"),
-           "forecast_next_8_weeks": st.column_config.NumberColumn("Forecast 8 weeks", format="%,.1f")}
-    for w in wk:
-        cfg[w] = st.column_config.NumberColumn(w.replace("W", "Wk "), format="percent")
-    show_df(d[cols], hide_index=True, width="stretch", height=520, column_config=cfg)
-    download_csv(d[cols], "risk_alerts.csv")
+           "forecast_next_8_weeks": st.column_config.NumberColumn("Forecast 8 weeks", format="%,.0f")}
+    show_df(d[cols], hide_index=True, width="stretch", height=520, column_config=cfg, fit={"widths": (440, 240, 240)})
+    full_cols = [c for c in ["severity", "risk", "item_code", "warehouse", "abc", "root_causes", "suggested_action", "revenue_at_risk",
+                             "excess_value", "max_stockout_probability", "first_risk_week", "on_hand", "open_customer_orders",
+                             "open_po_qty", "next_po_eta", "forecast_next_8_weeks", "supplier"] + wk if c in d.columns]
+    download_csv(d[full_cols], "risk_alerts.csv")

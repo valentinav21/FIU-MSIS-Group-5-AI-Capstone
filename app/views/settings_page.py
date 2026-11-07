@@ -32,8 +32,8 @@ with st.form("settings"):
     cur_mode = str(inv.get("budget_mode", "off"))
     mode = c2.selectbox("Budget mode", modes + ([cur_mode] if cur_mode not in modes else []),
                         index=(modes + [cur_mode]).index(cur_mode) if cur_mode in modes + [cur_mode] else 0,
-                        format_func=lambda v: {"off": "Off: use the targets above", "inventory": "Keep today's inventory dollars",
-                                               "current": "Keep today's safety stock dollars"}.get(v, f"Inventory budget ${float(v):,.0f}" if v.replace('.', '', 1).isdigit() else v),
+                        format_func=lambda v: {"off": "Off: use the targets above", "inventory": "Keep today's stock-on-hand dollars",
+                                               "current": "Keep today's safety stock dollars (needs SAP min / max)"}.get(v, f"Inventory budget ${float(v):,.0f}" if v.replace('.', '', 1).isdigit() else v),
                         help="With a budget, the planner places the money item by item where it serves the most revenue, instead of using fixed targets.")
     custom = c3.number_input("Or a fixed inventory budget ($, 0 = not used)", min_value=0.0, value=0.0, step=100000.0, format="%.0f")
     c1, c2, c3, c4 = st.columns(4)

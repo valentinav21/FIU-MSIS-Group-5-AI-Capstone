@@ -74,8 +74,14 @@ def _inputs(prep, pol, rows):
     return moq, mult, lts
 
 
-def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extra: dict | None = None) -> dict:
-    """extra: optional {name: (reorder point array, order-up-to array)} aligned with pol.table rows."""
+SIMPLE = "Simple rule: average demand, no safety stock"
+
+
+def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extra: dict | None = None,
+        use_sap: bool = True) -> dict:
+    """extra: optional {name: (reorder point array, order-up-to array)} aligned with pol.table rows.
+    use_sap: compare with today's SAP min / max (only on items where they are set). When SAP min / max are not
+    maintained, every planned item is replayed and the AI settings are compared with a simple rule instead."""
     WM = prep.weekly_matrix()
     if WM is None:
         return {"note": "Policy replay needs weekly sales history."}
@@ -85,12 +91,14 @@ def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extr
     total = warm + weeks
     if T < weeks + 13:
         return {"note": "Policy replay needs at least 65 weeks of sales history."}
-    ok = (t["forecast_per_period"] > 0) & t["current_min"].notna() & t["current_max"].notna()
-    ok &= pd.Series(WM[:, -weeks:].sum(axis=1) > 0, index=t.index)
-    idx = np.nonzero(ok.to_numpy())[0]
+    sold = pd.Series(WM[:, -weeks:].sum(axis=1) > 0, index=t.index) & (t["forecast_per_period"] > 0)
+    sap_rows = sold & t["current_min"].notna() & t["current_max"].notna()
+    basis = "sap" if use_sap and sap_rows.any() else "simple"
+    idx = np.nonzero((sap_rows if basis == "sap" else sold).to_numpy())[0]
     if len(idx) == 0:
-        return {"note": "Needs SAP MinStock and MaxStock on the stock file and at least one sale in the replay window."}
+        return {"note": "No planned item sold in the last 52 weeks, so there is nothing to replay."}
     rng = np.random.default_rng(seed)
+    eligible = int(len(idx))
     if len(idx) > max_series:  # keep every A item, sample the rest
         a = idx[t["abc"].to_numpy()[idx] == "A"]
         rest = np.setdiff1d(idx, a)
@@ -99,12 +107,19 @@ def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extr
     cost = t["unit_cost"].to_numpy()[idx]
     price = t["sell_price"].to_numpy()[idx]
     moq, mult, lts = _inputs(prep, pol, idx)
-    pols = {
-        "Today's SAP min / max": (t["current_min"].to_numpy(float)[idx], t["current_max"].to_numpy(float)[idx]),
-        "AI planner": (t["reorder_point"].to_numpy(float)[idx], t["order_up_to"].to_numpy(float)[idx]),
-    }
-    for name, (s_all, S_all) in (extra or {}).items():
-        pols[name] = (np.asarray(s_all, float)[idx], np.asarray(S_all, float)[idx])
+    ai = (t["reorder_point"].to_numpy(float)[idx], t["order_up_to"].to_numpy(float)[idx])
+    if basis == "sap":
+        pols = {"Today's SAP min / max": (t["current_min"].to_numpy(float)[idx], t["current_max"].to_numpy(float)[idx]),
+                "AI planner": ai}
+        for name, (s_all, S_all) in (extra or {}).items():
+            pols[name] = (np.asarray(s_all, float)[idx], np.asarray(S_all, float)[idx])
+    else:
+        # a transparent rule a buyer could set by hand: reorder when stock covers the average lead time demand,
+        # order one month of average demand. Average weekly demand comes from the same history the AI saw.
+        avg_w = WM[idx, -weeks:].mean(axis=1)
+        lt_w = np.nan_to_num(t["lead_time_median_days"].to_numpy(float)[idx], nan=105.0) / 7.0
+        s_simple = avg_w * lt_w
+        pols = {SIMPLE: (s_simple, s_simple + avg_w * 52.0 / 12.0), "AI planner": ai}
     res, per = {}, {}
     for name, (s_l, S_l) in pols.items():
         r = replay(D, s_l, S_l, moq, mult, lts, cost, warm, np.random.default_rng(seed + 1))
@@ -119,16 +134,20 @@ def run(prep, pol, weeks: int = 52, seed: int = 21, max_series: int = 3000, extr
             "Item-weeks with a stockout": int(r["stockout_weeks"].sum()),
         }
     df = pd.DataFrame(res)
-    sap = per["Today's SAP min / max"]
-    pred = t["current_fill_rate"].to_numpy(float)[idx]
-    w = sap["demand"] * price
-    m = np.isfinite(pred) & np.isfinite(sap["fill"]) & (w > 0)
-    check = pd.DataFrame({"abc": t["abc"].to_numpy()[idx][m], "predicted": pred[m], "replayed": sap["fill"][m], "w": w[m]})
+    # model check: what the simulator predicted for a policy against what that policy delivered on real history
+    if basis == "sap":
+        rep, pred, who = per["Today's SAP min / max"], t["current_fill_rate"].to_numpy(float)[idx], "today's SAP settings"
+    else:
+        rep, pred, who = per["AI planner"], t["fill_rate_at_rop"].to_numpy(float)[idx], "AI settings"
+    w = rep["demand"] * price
+    m = np.isfinite(pred) & np.isfinite(rep["fill"]) & (w > 0)
+    check = pd.DataFrame({"abc": t["abc"].to_numpy()[idx][m], "predicted": pred[m], "replayed": rep["fill"][m], "w": w[m]})
     chk = []
     for g, d in list(check.groupby("abc")) + [("All", check)]:
-        chk.append({"Group": g, "Items": len(d), "Predicted fill, today's SAP settings": float((d.predicted * d.w).sum() / d.w.sum()),
+        chk.append({"Group": g, "Items": len(d), f"Predicted fill, {who}": float((d.predicted * d.w).sum() / d.w.sum()),
                     "Replayed fill on real history": float((d.replayed * d.w).sum() / d.w.sum())})
-    return {"table": df, "series": int(len(idx)), "weeks": weeks, "model_check": pd.DataFrame(chk)}
+    return {"table": df, "series": int(len(idx)), "weeks": weeks, "model_check": pd.DataFrame(chk), "basis": basis,
+            "eligible": eligible}
 
 
 def calibrate_kappa(prep, fc, lt_model, tables, settings, inventory_mod, sample=300, seed=4, grid=(0.0, 0.5, 1.0)):
@@ -140,7 +159,7 @@ def calibrate_kappa(prep, fc, lt_model, tables, settings, inventory_mod, sample=
     stock = tables.get("stock")
     if stock is None or len(stock) == 0 or stock["min_stock"].isna().all() or stock["max_stock"].isna().all():
         return float(settings["inventory"].get("model_error_weight", 0.0)), pd.DataFrame()
-    st = stock.dropna(subset=["min_stock", "max_stock"])
+    st = stock[[inventory_mod.sap_levels(a, b) is not None for a, b in zip(stock["min_stock"], stock["max_stock"])]]
     keyset = set(zip(st["item_code"], st["warehouse"].astype(str)))
     t = fc.table
     live = (fc.path[:, :13].mean(axis=1) > 1e-3) & (WM[:, -52:].sum(axis=1) > 0)

@@ -137,26 +137,26 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=9, n_sims=1000):
                           "total": purchase + short_cost + carry, "moq": moq})
         ev = sorted(evals, key=lambda e: e["total"])
         best = ev[0]
-        why = [f"Stock position {ip:.0f} (on hand {on_hand:.0f} - customer orders {committed:.0f} + open POs {on_po:.0f}) "
-               f"{'is at or below' if action == 'Order now' else 'will reach'} the reorder point {rop:.0f}. Ordering up to {upto:.0f}."]
+        why = [f"Stock position {ip:,.0f} (on hand {on_hand:,.0f} - customer orders {committed:,.0f} + open POs {on_po:,.0f}) "
+               f"{'is at or below' if action == 'Order now' else 'will reach'} the reorder point {rop:,.0f}. Ordering up to {upto:,.0f}."]
         if best["supplier"] == NO_SUPPLIER:
             why.append("No supplier on file for this item (no preferred vendor, PO history or sourcing record): "
                        "choose one in SAP. This line is left out of the SAP draft export.")
         if best["qty"] > need + 0.5:
-            why.append(f"Quantity rounded up from {need:.0f} to {best['qty']:.0f} for the supplier minimum or pack size.")
+            why.append(f"Quantity rounded up from {need:,.0f} to {best['qty']:,.0f} for the supplier minimum or pack size.")
         if len(ev) > 1:
             alt = ev[1]
             d_price = (best["unit_landed"] - alt["unit_landed"]) * best["qty"]
             if best["lt_median"] < alt["lt_median"] - 3 and d_price > 0:
                 why.append(f"{best['supplier']} costs ${d_price:,.0f} more than {alt['supplier']} but arrives in about "
-                           f"{best['lt_median']:.0f} days instead of {alt['lt_median']:.0f}, cutting expected units short "
-                           f"before arrival from {alt['exp_short']:.1f} to {best['exp_short']:.1f} (worth ${alt['short_cost'] - best['short_cost']:,.0f}).")
+                           f"{best['lt_median']:,.0f} days instead of {alt['lt_median']:,.0f}, cutting expected units short "
+                           f"before arrival from {alt['exp_short']:,.0f} to {best['exp_short']:,.0f} units (worth ${alt['short_cost'] - best['short_cost']:,.0f}).")
             else:
                 why.append(f"{best['supplier']} has the lowest total cost: ${best['total']:,.0f} vs ${alt['total']:,.0f} "
                            f"from {alt['supplier']} (landed price, shortage risk and safety stock carrying cost included).")
         if best["p_short"] >= 0.5 and best["exp_short"] >= 1:
             why.append(f"Even with this order there is a {best['p_short']:.0%} chance of running short before it arrives "
-                       f"(about {best['exp_short']:.1f} units); consider a transfer or expediting.")
+                       f"(about {best['exp_short']:,.0f} units); consider a transfer or expediting.")
         eta = as_of + pd.Timedelta(days=float(best["lt_median"]))
         rows.append({
             "approve": action == "Order now" and best["supplier"] != NO_SUPPLIER, "action": action, "order_by": order_by.normalize(),
@@ -168,7 +168,7 @@ def build(prep, fc, pol, lt_model, tables, settings, seed=9, n_sims=1000):
             "expected_units_short_before_arrival": best["exp_short"],
             "chance_short_before_arrival": best["p_short"],
             "weeks_cover_after_receipt": (ip + best["qty"]) / max(per_day * 7, 1e-9),
-            "alternatives": "; ".join(f"{e['supplier']}: {e['qty']:.0f} @ ${e['unit_landed']:.2f} landed, ~{e['lt_median']:.0f} days, total ${e['total']:,.0f}"
+            "alternatives": "; ".join(f"{e['supplier']}: {e['qty']:,.0f} @ ${e['unit_landed']:.2f} landed, ~{e['lt_median']:,.0f} days, total ${e['total']:,.0f}"
                                       for e in ev[1:3]),
             "why": " ".join(why),
         })
@@ -308,6 +308,6 @@ def transfers(pol, tables, settings, transfer_days: float = 5.0, lt_model=None) 
                     q = float(np.floor(min(spare, need)))
                     if q >= 1:
                         rows.append({"item_code": item, "from_warehouse": wb, "to_warehouse": wa, "quantity": q,
-                                     "why": f"{wa} is {need:.0f} unit{'s' if round(need) != 1 else ''} below its reorder point; "
-                                            f"{wb} holds {spare:.0f} more than it needs."})
+                                     "why": f"{wa} is {need:,.0f} unit{'s' if round(need) != 1 else ''} below its reorder point; "
+                                            f"{wb} holds {spare:,.0f} more than it needs."})
     return pd.DataFrame(rows)

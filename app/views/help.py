@@ -30,7 +30,7 @@ st.markdown("""
    supplier's overall pattern as backup and 105 days (FORTPRO's observed median) when there is nothing else.
 5. **Sets safety stock, reorder points and order-up-to levels** by simulating two years of weekly operation for each candidate level,
    with supplier minimums and pack sizes. It keeps the lowest level that meets the target fill rate. It can also take a budget
-   (for example today's inventory dollars) and place it item by item where it serves the most revenue.
+   (for example today's stock on hand, in dollars) and place it item by item where it serves the most revenue.
 6. **Warns 1 to 8 weeks ahead** about stockouts, overstock, at-risk stock (no sale for 12 months) and dead stock (24 months),
    with root causes. Open POs older than 180 days and sales orders more than 180 days past their ship date are not counted.
 7. **Recommends purchase orders** with quantity, timing and supplier, comparing landed cost, shortage risk before arrival and the
@@ -39,7 +39,8 @@ st.markdown("""
 8. **Scores suppliers** on reliability, fill rate, lead time consistency and price against alternatives. FORTPRO's PO lines
    have no real promise dates, so reliability means arriving within 1.5 times the supplier's usual (median) lead time.
 9. **Proves itself** by checking its predictions for today's SAP settings against a weekly replay of real history, then replaying
-   last year through the new settings. `tools/backtest_export.py` writes the Jan 31, 2026 backtest for the Fabric scorecard.
+   last year through the new settings. This needs SAP MinStock / MaxStock; where they are 0 / 0 (not set), the planner
+   compares against today's stock on hand instead and says so. `tools/backtest_export.py` writes the Jan 31, 2026 backtest for the Fabric scorecard.
 
 **Assumptions, not FORTPRO data:** holding cost 25% a year, \\$25 per PO line, stockout cost 30% of price, the service targets
 by ABC class, the \\$10,000 international minimum and the 60%-of-price cost for items with no cost. Change them in Settings.
@@ -58,12 +59,10 @@ cmp = pd.DataFrame([
     ["Model check on your own history before go-live", NS, NS, NS, NS, "Yes, built in"],
     ["Supplier performance scoring", "Yes", NS, NS, "No", "Yes, incl. price vs alternatives"],
     ["Multi-supplier choice with shortage risk", NS, NS, NS, "No", "Yes, explained per line"],
-    ["Churn, cross-sell, wallet share", "No", "No", "No", "Yes", "Yes, tested out of time"],
-    ["Price optimization", "No", "No", "No", "Zilliant: Yes", "Leakage and sensitivity, with guardrails"],
-    ["Unmet demand from web store searches", NS, NS, NS, NS, "Yes (FocusPoint log)"],
-    ["Purchasing and sales in one tool", "No", "No", "No", "No", "Yes"],
+    ["Churn, cross-sell, wallet share", "No", "No", "No", "Yes", "TBD (sales growth, problem statement 2)"],
+    ["Price optimization", "No", "No", "No", "Zilliant: Yes", "TBD (sales growth, problem statement 2)"],
     ["Runs on your own computer", "No (cloud)", "No (cloud)", NS, "No (cloud)", "Yes, data stays in house"],
-    ["Pricing", "Quote", "Quote", "Quote", "Quote", "Free"],
+    ["Pricing", "Quote", "Quote", "Quote", "Quote", "No license fee (built by the FIU team)"],
 ], columns=["Capability", "Netstock", "Lokad", "ToolsGroup", "Proton.ai / Zilliant", "FORTPRO AI Planner"])
 show_df(cmp, column_config={"FORTPRO AI Planner": st.column_config.TextColumn(width="large"), "Capability": st.column_config.TextColumn(width="medium")})
 st.caption("Vendor columns summarize what each vendor's public pages state (read October 2026). 'Not stated' means the page did "
@@ -82,14 +81,14 @@ st.markdown("""
 - **Demand patterns**: smooth (sells most months, steady sizes), erratic (most months, varied sizes), intermittent (many zero
   months, steady sizes), lumpy (many zero months, varied sizes).
 - **At-risk / dead stock**: on hand with no sale for 12 / 24 months.
-- **AUC**: how well the churn model ranks customers; 0.5 is a coin flip, 1.0 is perfect.
 
 ### Limits to keep in mind
 - Results are only as good as the export. Check Data health first.
 - The policy replay uses settings computed with the replay year included. Confirm with a forward pilot on a group of items.
-- Stock is a single snapshot (Oct 21, 2026), so the replay simulates stock from SAP's MinStock and MaxStock rather than
-  replaying real stock history.
-- MOQ and pack sizes are mostly blank until FORTPRO sends them (expected in 2 to 3 weeks); a minimum of 1 is used meanwhile.
-- Price sensitivity is shown only where prices varied enough for the same customer and item; otherwise run a price test.
+- Stock is a single snapshot from the export, so the replay simulates stock from SAP's MinStock and MaxStock rather than
+  replaying real stock history, and only for items where those are set.
+- Service targets, holding cost and stockout cost are assumptions. The inventory the planner recommends rises or falls with
+  them; the curve on Stock levels shows the trade-off.
+- Where MOQ and pack size are blank in the export, a minimum of 1 is used.
 - Draft POs are drafts. A buyer approves every order in SAP.
 """)

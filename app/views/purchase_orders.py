@@ -8,9 +8,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
+from html import escape as _esc  # noqa: E402
 
-from common import esc, kpi_row, money, need, page_setup, paged, require_results, table  # noqa: E402
+from common import esc, esc_html, kpi_row, sentences, money, need, page_setup, paged, require_results, show_df, table  # noqa: E402
 from engine import purchasing  # noqa: E402
+
+
+def _h(v):
+    return "" if v is None or (isinstance(v, float) and v != v) else _esc(str(v))
+
+
+def _cols(widths, align):
+    """Tight columns. gap="xsmall" is newer than Streamlit 1.50; older versions get "none" (the CSS adds padding)."""
+    try:
+        return st.columns(widths, vertical_alignment=align, gap="xsmall")
+    except Exception:  # noqa: BLE001
+        return st.columns(widths, vertical_alignment=align, gap=None)
+
 
 page_setup("Purchase orders")
 st.markdown('<p class="fp-note">Draft purchase orders for buyer approval. Each line says why it is suggested, which supplier '
@@ -53,11 +67,6 @@ with tab1:
                            f"{len(low):,} lines, {money(low['line_total'].sum())} in total.  \n"
                            "Options: add 'Order soon' lines from the same supplier, buy from a US source, or wait.  \n"
                            "The Why column on each line shows how far below the minimum it is."))
-        compact = ["approve", "action", "order_by", "item_code", "item_name", "warehouse", "supplier", "supplier_country",
-                   "below_supplier_minimum", "quantity", "unit_price", "line_total", "expected_arrival", "chance_short_before_arrival", "why"]
-        full = ["approve", "action", "order_by", "item_code", "item_name", "warehouse", "abc", "supplier", "supplier_country",
-                "below_supplier_minimum", "quantity", "unit_price", "line_total", "expected_arrival", "stock_position", "reorder_point", "order_up_to",
-                "chance_short_before_arrival", "expected_units_short_before_arrival", "weeks_cover_after_receipt", "why", "alternatives"]
         # ticks and quantity changes are kept per line across pages and filters until the next run
         store = st.session_state.setdefault(f"po_edits_{r.created}", {})
         base = d.copy()
@@ -75,38 +84,71 @@ with tab1:
                 store[i] = (False, float(base.at[i, "quantity"]))
             st.session_state["po_ver"] = st.session_state.get("po_ver", 0) + 1
             st.rerun()
-        show_all = b3.toggle("Show every column", False, help="Stock position, reorder point, order up to, cover after receipt and other suppliers.")
-        show_cols = [c for c in (full if show_all else compact) if c in d.columns]
-        page = paged(base, "po_page", default=50)
-        ed = st.data_editor(
-            page[show_cols], hide_index=True, width="stretch", height="content", key=f"po_editor_{r.created}_{st.session_state.get('po_ver', 0)}_{page.index[0] if len(page) else 0}",
-            disabled=[c for c in show_cols if c not in ("approve", "quantity")],
-            column_config={
-                "approve": st.column_config.CheckboxColumn("Approve", help="Ticked lines go into the SAP draft export"),
-                "action": st.column_config.TextColumn("Action"),
-                "item_code": st.column_config.TextColumn("Item"),
-                "warehouse": st.column_config.TextColumn("Whs"),
-                "abc": st.column_config.TextColumn("ABC"),
-                "supplier": st.column_config.TextColumn("Supplier"),
-                "supplier_country": st.column_config.TextColumn("Country"),
-                "below_supplier_minimum": st.column_config.CheckboxColumn("Below intl. minimum", help="Supplier outside the US and all its 'Order now' lines total less than the minimum order setting"),
-                "chance_short_before_arrival": st.column_config.ProgressColumn("Chance short before arrival", format="percent", min_value=0, max_value=1),
-                "quantity": st.column_config.NumberColumn("Quantity", min_value=0, step=1, format="%,.0f"),
-                "unit_price": st.column_config.NumberColumn("Unit price", format="$%,.2f"),
-                "line_total": st.column_config.NumberColumn("Line total", format="$%,.0f"),
-                "stock_position": st.column_config.NumberColumn("Stock position", format="%,.0f"),
-                "reorder_point": st.column_config.NumberColumn("Reorder point", format="%,.0f"),
-                "order_up_to": st.column_config.NumberColumn("Order up to", format="%,.0f"),
-                "expected_units_short_before_arrival": st.column_config.NumberColumn("Units short before arrival", format="%,.1f"),
-                "weeks_cover_after_receipt": st.column_config.NumberColumn("Weeks cover after receipt", format="%,.1f"),
-                "order_by": st.column_config.DateColumn("Order by"),
-                "expected_arrival": st.column_config.DateColumn("Expected arrival"),
-                "why": st.column_config.TextColumn("Why", width="large"),
-                "alternatives": st.column_config.TextColumn("Other suppliers", width="large"),
-                "item_name": st.column_config.TextColumn("Item name", width="medium"),
-            })
-        for i in ed.index:
-            store[i] = (bool(ed.at[i, "approve"]), float(ed.at[i, "quantity"]))
+        show_all = b3.toggle("Show stock details and other suppliers", False,
+                             help="Adds stock position, reorder point, order-up-to level, cover after receipt and the other suppliers under each reason.")
+        page = paged(base, "po_page", default=25, note="Ticks and quantities are kept when you change pages; the export covers every approved line."
+                     + (f" Order by and Arrives count from the data date, {r.as_of:%b %d, %Y}." if r.as_of is not None else ""))
+        ver = st.session_state.get("po_ver", 0)
+        # every field in its own column, and the reasons last, stacked one sentence per line
+        # widths in pixels at full size, sized to the content (the list shrinks proportionally on smaller screens)
+        W = [72, 128, 175, 100, 46, 46, 96, 70, 96, 86, 84, 84, 84, 62, 502]
+        heads = ["Approve", "Item", "Item name", "Action", "ABC", "Whs", "Supplier", "Country", "Quantity",
+                 "Unit price", "Line total", "Order by", "Arrives", "Short risk", "Why"]
+        # Action only adds information when the list mixes 'Order now' and 'Order soon' lines
+        one_action = base["action"].nunique() <= 1
+        if one_action:
+            j = heads.index("Action")
+            W, heads = W[:j] + W[j + 1:], heads[:j] + heads[j + 1:]
+            if len(base):
+                st.caption(f"All lines shown are **{base['action'].iloc[0]}**. Select both actions in the filter to mix them; an Action column then appears.")
+        right = {"Unit price", "Line total", "Short risk"}
+        # list rows use a slightly smaller type so all fields and the reasons fit side by side
+        center = {"Approve", "Action", "ABC", "Whs", "Country", "Order by", "Arrives", "Why"}
+        # same look as every other table: bordered box, shaded header, thin row lines, hover shade
+        box = st.container(border=True, key="po_list")
+        with box.container(key="po_head"):
+            hdr = _cols(W, "bottom")
+            for c, t in zip(hdr, heads):
+                al = "fp-ctr"  # every header centered over its column, as in the other tables
+                c.markdown(f'<div class="fp-h fp-hw {al}" title="{"Chance of running short before this order arrives" if t == "Short risk" else t}">{t}</div>', unsafe_allow_html=True)
+
+        def cell(col, text, al="", muted=False):
+            col.markdown(esc_html(f'<div class="fp-c {al}{" fp-m" if muted else ""}">{text}</div>'), unsafe_allow_html=True)
+
+        for i, x in page.iterrows():
+            with box.container(key=f"po_row_{i}"):
+                C = dict(zip(heads, _cols(W, "top")))
+                k = f"{r.created}_{ver}_{i}"
+                nos = x["supplier"] == "NO SUPPLIER"
+                ap = C["Approve"].checkbox("Approve", value=bool(x["approve"]) and not nos, key=f"ap_{k}", label_visibility="collapsed",
+                                      disabled=bool(nos), help="No supplier on file: pick one in SAP" if nos else None)
+                cell(C["Item"], f'<b style="white-space:nowrap">{_h(x["item_code"])}</b>')
+                cell(C["Item name"], _h(x.get("item_name", "")), muted=True)
+                badge = "fp-b-now" if x["action"] == "Order now" else "fp-b-soon"
+                if "Action" in C:
+                    cell(C["Action"], f'<span class="fp-b {badge}">{_h(x["action"])}</span>', "fp-ctr")
+                cell(C["ABC"], _h(x.get("abc", "")), "fp-ctr")
+                cell(C["Whs"], _h(x["warehouse"]), "fp-ctr")
+                low = bool(x.get("below_supplier_minimum", False))
+                cell(C["Supplier"], _h(x["supplier"]) + ('<br><span class="fp-b fp-b-warn">Below min.</span>' if low else ""))
+                cell(C["Country"], _h(x.get("supplier_country") or ""), "fp-ctr")
+                q = C["Quantity"].number_input("Quantity", min_value=0.0, value=float(x["quantity"]), step=1.0, format="%.0f",
+                                         key=f"q_{k}", label_visibility="collapsed")
+                cell(C["Unit price"], money(float(x["unit_price"]), 2), "fp-num")
+                cell(C["Line total"], f'<b>{money(q * float(x["unit_price"]))}</b>', "fp-num")
+                cell(C["Order by"], pd.Timestamp(x["order_by"]).strftime("%m/%d/%y") if pd.notna(x.get("order_by")) else "", "fp-ctr")
+                cell(C["Arrives"], pd.Timestamp(x["expected_arrival"]).strftime("%m/%d/%y") if pd.notna(x.get("expected_arrival")) else "", "fp-ctr")
+                ch = x.get("chance_short_before_arrival")
+                cell(C["Short risk"], f"{ch:.0%}" if pd.notna(ch) else "", "fp-num")
+                why = "".join(f'<div class="fp-s">{_h(t)}</div>' for t in sentences(x["why"]))
+                if show_all:
+                    det = (f'Stock position {x.get("stock_position", 0):,.0f} · reorder point {x.get("reorder_point", 0):,.0f} · '
+                           f'order up to {x.get("order_up_to", 0):,.0f} · {x.get("weeks_cover_after_receipt", 0):,.1f} weeks of cover after receipt')
+                    why += f'<div class="fp-s fp-m">{_h(det)}</div>'
+                    if isinstance(x.get("alternatives"), str) and x["alternatives"].strip():
+                        why += "".join(f'<div class="fp-s fp-m">{_h(t)}</div>' for t in sentences("Other suppliers: " + x["alternatives"]))
+                C["Why"].markdown(esc_html(f'<div class="fp-c fp-whycol fp-whyc"><div class="fp-whyb">{why}</div></div>'), unsafe_allow_html=True)
+                store[i] = (bool(ap), float(q))
         allv = d.copy()
         for i, v in store.items():
             if i in allv.index:
@@ -147,15 +189,23 @@ with tab3:
     if stale is None or len(stale) == 0:
         st.info(f"No open PO lines older than {days} days.")
     else:
-        st.caption(f"Open PO lines older than {days} days by PO date. They are not counted as incoming stock: at FORTPRO, 9 in 10 "
-                   "orders arrive within about 180 days, so these are most likely overdue or were never closed. "
-                   "Confirm with the supplier or close them in SAP.")
+        st.caption(f"Open PO lines older than {days} days by PO date. They are not counted as incoming stock, because lines this old "
+                   "are most likely overdue or were never closed. Confirm with the supplier or close them in SAP.")
         sd = stale.copy()
         sd["age_days"] = (r.as_of - sd["po_date"]).dt.days
-        sd["po_date"] = sd["po_date"].dt.strftime("%Y-%m-%d")
+        sd["po_date"] = sd["po_date"].dt.strftime("%m/%d/%y")
+        if "po_entry" in sd:
+            sd["po_entry"] = [str(int(v)) if pd.notna(v) and str(v).replace(".0", "").isdigit() else str(v) for v in sd["po_entry"]]
         cols = [c for c in ["po_entry", "line_num", "po_date", "age_days", "item_code", "supplier_code", "warehouse", "quantity",
                             "received_qty", "open_qty", "unit_price"] if c in sd.columns]
         sd = sd.sort_values("age_days", ascending=False)[cols]
         kpi_row([("Old open lines", f"{len(sd):,}", None, None), ("Units", f"{sd['open_qty'].sum():,.0f}", None, None),
                  ("Older than a year", f"{(sd['age_days'] > 365).sum():,}", None, None)])
-        table(sd, unit_cols=("quantity", "received_qty", "open_qty", "age_days"), money_cols=())
+        show_df(sd, hide_index=True, column_config={
+            "po_entry": st.column_config.TextColumn("PO"), "line_num": st.column_config.NumberColumn("Line", format="%d"),
+            "po_date": st.column_config.TextColumn("PO date"), "age_days": st.column_config.NumberColumn("Age (days)", format="%,.0f"),
+            "item_code": st.column_config.TextColumn("Item"), "supplier_code": st.column_config.TextColumn("Supplier"),
+            "warehouse": st.column_config.TextColumn("Whs"), "quantity": st.column_config.NumberColumn("Ordered", format="%,.0f"),
+            "received_qty": st.column_config.NumberColumn("Received", format="%,.0f"),
+            "open_qty": st.column_config.NumberColumn("Still open", format="%,.0f"),
+            "unit_price": st.column_config.NumberColumn("Unit price", format="$%,.2f")})

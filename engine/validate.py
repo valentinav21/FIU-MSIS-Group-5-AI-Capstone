@@ -22,7 +22,7 @@ def run_checks(res, settings) -> pd.DataFrame:
     items, sales = t.get("items"), t.get("sales")
     if items is not None:
         d = int(items["item_code"].duplicated().sum())
-        rows.append(_row("items", "Duplicate item codes", OK if d == 0 else WARN, f"{d} duplicates" if d else "None",
+        rows.append(_row("items", "Duplicate item codes", OK if d == 0 else WARN, f"{d:,} duplicates",
                          "Keep one row per ItemCode; the first row is used."))
         for c, fix in (("unit_cost", "Needed for inventory value and holding cost. Missing cost falls back to the latest PO price, then 60% of selling price."),
                        ("category", "Needed for grouping and segment analysis. Missing values show as Uncategorized.")):
@@ -54,18 +54,26 @@ def run_checks(res, settings) -> pd.DataFrame:
         rows.append(_row("sales", "Lines with no ship-to state or country", OK if geo < 0.05 else WARN, f"{geo:.0%} of lines",
                          "Needed for geographic analysis. Customer master location is used when the line has none."))
         if sales["doc_entry"].notna().any() and sales["line_num"].notna().any():
-            dup = int(sales.duplicated(["doc_entry", "line_num", "item_code"]).sum())
-            rows.append(_row("sales", "Duplicate document lines", OK if dup == 0 else WARN, f"{dup} duplicates",
+            keys = [c for c in ("doc_entry", "line_num", "item_code", "warehouse") if c in sales]
+            dup = int(sales.duplicated(keys).sum())
+            rows.append(_row("sales", "Duplicate document lines", OK if dup == 0 else WARN, f"{dup:,} duplicates",
                              "The same DocEntry and LineNum appears twice. Check for overlapping exports."))
     stock = t.get("stock")
     if stock is not None and len(stock):
         neg = int((stock["on_hand"] < 0).sum())
-        rows.append(_row("stock", "Negative on hand", OK if neg == 0 else WARN, f"{neg} item-warehouse rows",
+        rows.append(_row("stock", "Negative on hand", OK if neg == 0 else WARN, f"{neg:,} item-warehouse rows",
                          "Negative stock is treated as zero available."))
+        if "min_stock" in stock and "max_stock" in stock:
+            mn = pd.to_numeric(stock["min_stock"], errors="coerce").fillna(0)
+            mx = pd.to_numeric(stock["max_stock"], errors="coerce").fillna(0)
+            share = float(((mn > 0) | (mx > 0)).mean())
+            rows.append(_row("stock", "Rows with SAP MinStock / MaxStock set", OK if share >= 0.5 else INFO, f"{share:.0%} of rows",
+                             "0 / 0 means not set in SAP. When most rows are not set, Stock levels compares the planner with "
+                             "today's stock on hand instead of today's SAP settings."))
         if sales is not None:
             noso = ~sales["item_code"].isin(set(stock["item_code"]))
             rows.append(_row("stock", "Sold items with no stock row", OK if noso.mean() < 0.05 else WARN,
-                             f"{sales.loc[noso, 'item_code'].nunique()} items", "Assumed zero on hand."))
+                             f"{sales.loc[noso, 'item_code'].nunique():,} items", "Assumed zero on hand."))
     po, gr = t.get("purchases"), t.get("receipts")
     if po is not None and len(po):
         if gr is not None and len(gr):
@@ -110,7 +118,7 @@ def run_checks(res, settings) -> pd.DataFrame:
     for key, tab in TABLES.items():
         n = len(t[key]) if key in t else 0
         rows.append(_row(key, f"{tab.title}", INFO if n else (WARN if tab.essential else INFO),
-                         f"{n:,} rows loaded" if n else ("not provided" + (" (essential)" if tab.essential else " (optional)")),
+                         f"{n:,} row{'s' if n != 1 else ''} loaded" if n else ("not provided" + (" (essential)" if tab.essential else " (optional)")),
                          f"SAP source: {tab.sap_source}"))
     return pd.DataFrame(rows)
 

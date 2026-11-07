@@ -29,11 +29,13 @@ with tab1:
                      column_config={"Ready": st.column_config.TextColumn(width="small")})
         st.subheader("Checks")
         h = r.health.copy()
+        n_ = h["Status"].value_counts()
+        _p, _c, _o = int(n_.get("Problem", 0)), int(n_.get("Check", 0)), int(n_.get("OK", 0))
+        st.markdown(f"**{_o} checks passed, {_c} to review, {_p} problem{'s' if _p != 1 else ''}.** "
+                    + ("Problems and items to review are listed first." if _p + _c else "Nothing needs attention."))
         order = {"Problem": 0, "Check": 1, "OK": 2, "Info": 3}
         h["_o"] = h["Status"].map(order)
         h = h.sort_values(["_o", "Area"]).drop(columns="_o")
-        icon = {"Problem": "🔴 Problem", "Check": "🟡 Check", "OK": "🟢 OK", "Info": "ℹ️ Info"}
-        h["Status"] = h["Status"].map(icon)
         show_df(h, hide_index=True, width="stretch", height=520,
                      column_config={"Detail": st.column_config.TextColumn(width="medium"),
                                     "How to fix": st.column_config.TextColumn(width="large")})

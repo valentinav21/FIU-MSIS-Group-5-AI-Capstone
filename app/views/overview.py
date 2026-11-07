@@ -8,20 +8,20 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from common import (signed_money, esc, esc_html, show_df, ROOT, SAMPLE_FOLDER, is_sample, kpi_row, money, page_setup, pct, results, settings)  # noqa: E402
+from common import (sap_ok, stock_kpis, signed_money, esc, esc_html, ROOT, SAMPLE_FOLDER, is_sample, kpi_row, money, page_setup, results, settings)  # noqa: E402
 from engine import io as eio  # noqa: E402
 from engine import pipeline, report  # noqa: E402
 
-page_setup("FORTPRO AI Planner")
-st.markdown('<p class="fp-note">Purchasing planning (BP1) for World Truck Parts, built for SAP Business One exports. Sales growth (BP2) is TBD. '
-            'Every number below is computed on this computer from the files you load.</p>', unsafe_allow_html=True)
-
 cfg = settings()
 r = results()
+page_setup("FORTPRO AI Planner")
+INTRO = ('<p class="fp-note">Purchasing planning (BP1) for World Truck Parts, built for SAP Business One exports. Sales growth (BP2) is TBD. '
+         'Every number is computed on this computer from the files you load.</p>')
+st.markdown(INTRO, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- data source and run
+st.subheader("Choose data and run")
 with st.container(border=True):
-    st.subheader("1. Choose data and run")
     c1, c2 = st.columns([3, 2])
     with c1:
         last = r.data_folder if r is not None else cfg["data"]["folder"]
@@ -78,7 +78,7 @@ with st.container(border=True):
         r = res
 
 if r is None:
-    st.info("No results yet. Pick a data source and press **Run analysis**. To explore first, choose the sample data.")
+    st.info("No results yet. Pick a data source above and press **Run analysis**. To explore first, choose the sample data.")
     st.stop()
 
 if is_sample(r.data_folder):
@@ -87,47 +87,51 @@ if is_sample(r.data_folder):
 for e in r.errors:
     st.error(e)
 
-st.subheader("2. Where things stand")
+# ---------------------------------------------------------------- the answer first
 _s = r.settings or {}
-_pw = ", ".join(_s.get("data", {}).get("plan_warehouses") or []) or "all warehouses"
+_pw = _s.get("data", {}).get("plan_warehouses") or []
+_pw = (" and ".join(_pw) if len(_pw) <= 2 else ", ".join(_pw)) or "all warehouses"
 _he = getattr(r, "history_end", None)
-st.caption(f"Data as of {r.as_of:%B %d, %Y}"
-           + (f" (monthly history through {_he:%b %d, %Y}, complete months only)" if r.bucket == "M" and _he is not None else "")
-           + f" · planning {_pw} · run {r.created} · folder {r.data_folder}")
+_now = r.po_recs[r.po_recs["action"] == "Order now"] if len(r.po_recs) else r.po_recs
+_crit = (r.alerts[(r.alerts["risk"] == "Stockout risk") & (r.alerts["severity"] == "Critical")] if len(r.alerts) else r.alerts)
+if len(_now):
+    h1 = f"{len(_now):,} order lines are due now, worth {money(_now['line_total'].sum())}."
+else:
+    h1 = "No purchase orders are due right now."
+if len(_crit):
+    h2 = f"{len(_crit):,} critical stockout risks in the next 8 weeks, with {money(_crit['revenue_at_risk'].sum())} of sales at stake."
+elif len(r.alerts):
+    h2 = "No critical stockout risks in the next 8 weeks."
+else:
+    h2 = ""
+ctx = (f"Based on data through {r.as_of:%B} {r.as_of.day}, {r.as_of.year} for warehouses {_pw}"
+       + (f", with monthly history through {_he:%B %Y}" if r.bucket == "M" and _he is not None else "") + ". "
+       + (lambda t: f"Analysis run {t:%b} {t.day}, {t.year} at {t.strftime('%I:%M %p').lstrip('0')}.")(pd.Timestamp(r.created)))
+st.markdown(esc_html(f'<div class="fp-hero"><p class="h1">{h1}</p>' + (f'<p class="h2">{h2}</p>' if h2 else "")
+                     + f'<p class="ctx">{ctx}</p></div>'), unsafe_allow_html=True)
+l1, l2, _ = st.columns([1, 1, 3])
+try:  # links need the app's menu; a page run on its own (tests) has none
+    l1.page_link("views/purchase_orders.py", label="Review purchase orders", icon=":material/shopping_cart:")
+    l2.page_link("views/risk_alerts.py", label="See risk alerts", icon=":material/warning:")
+except Exception:
+    pass
+
+st.subheader("Where things stand")
 st.caption("Costs, holding rate, stockout cost and service targets are ASSUMPTIONS (Settings), not FORTPRO data. "
            "Dollar figures below depend on them.")
 ps, rp = r.policy_summary or {}, r.replay or {}
 rt = rp.get("table")
-items = []
-if ps:
-    items.append(("Fill rate, today's SAP settings", pct(ps.get("current_fill_rate")), None,
-                  "Share of units demanded that ship from stock, simulated with today's MinStock and MaxStock. "
-                  "The replay on Stock levels measures what those settings really delivered."))
-    same = r.budget.get("same_inventory")
-    if same:
-        items.append(("Fill rate, AI, same inventory $", pct(same["fill_rate"]),
-                      f"{(same['fill_rate'] - ps.get('current_fill_rate', np.nan)) * 100:+.1f} pts",
-                      "Same average inventory dollars as today, placed where they serve the most revenue."))
-    items.append(("Fill rate, AI at your targets", pct(ps.get("fill_rate")),
-                  f"{(ps.get('fill_rate', np.nan) - ps.get('current_fill_rate', np.nan)) * 100:+.1f} pts",
-                  "Service targets from Settings (A 98%, B 96%, C 92% by default)."))
-    items.append(("Inventory at your targets", money(ps.get("avg_inventory_value")),
-                  f"{signed_money(ps.get('avg_inventory_value', 0) - ps.get('current_avg_inventory_value', 0))} vs today",
-                  "Average stock value the simulation expects at your targets, versus today's settings.", "off"))
+items = stock_kpis(r) if ps else []
 if items:
     kpi_row(items)
 items2 = []
 if rt is not None:
-    a, b = "Today's SAP min / max", "AI planner, same inventory dollars as today"
-    if b in rt.columns:
-        items2.append(("Lost sales avoided (replay)", money(rt.loc["Lost revenue", a] - rt.loc["Lost revenue", b]), None,
-                       "Real demand of the last 52 weeks replayed through both policies at the same inventory dollars. See Stock levels."))
-if len(r.po_recs):
-    now = r.po_recs[r.po_recs["action"] == "Order now"]
-    items2.append(("PO lines to place now", f"{len(now):,}", money(now["line_total"].sum()), "See Purchase orders."))
-if len(r.alerts):
-    crit = r.alerts[(r.alerts["risk"] == "Stockout risk") & (r.alerts["severity"] == "Critical")]
-    items2.append(("Critical stockout risks", f"{len(crit):,}", money(crit["revenue_at_risk"].sum()) + " at risk", "See Risk alerts."))
+    a, b = "Today's SAP min / max", "AI planner"
+    if a in rt.columns and b in rt.columns and sap_ok(r):
+        items2.append(("Lost sales avoided (replay)", money(rt.loc["Lost revenue", a] - rt.loc["Lost revenue", b]),
+                       f"{signed_money(rt.loc['Average inventory value', b] - rt.loc['Average inventory value', a])} avg inventory",
+                       f"Real demand of the last 52 weeks replayed through today's SAP min / max and the AI settings, on the "
+                       f"{rp['series']:,} items that have SAP min / max set. See Stock levels.", "off"))
 S = r.sales
 if S is not None and len(S.customers) and "revenue_at_risk" in S.customers:
     risky = S.customers[S.customers["churn_risk"] >= 0.5]
@@ -135,11 +139,11 @@ if S is not None and len(S.customers) and "revenue_at_risk" in S.customers:
 if items2:
     kpi_row(items2)
 
-st.subheader("3. Do these first")
+st.subheader("Do these first")
 acts = []
 if len(r.alerts):
     for x in r.alerts[r.alerts["risk"] == "Stockout risk"].head(3).itertuples():
-        acts.append(("Stockout risk", f"{x.item_code} at {x.warehouse}", f"{x.max_stockout_probability:.0%} chance of running out by week {int(x.first_risk_week)}. {x.root_causes.split(' | ')[0]}.", x.revenue_at_risk))
+        acts.append(("Stockout risk", f"{x.item_code} at {x.warehouse}", f"Risk starts in week {int(x.first_risk_week)} and peaks at a {x.max_stockout_probability:.0%} chance of running out. {x.root_causes.split(' | ')[0]}.", x.revenue_at_risk))
 if len(r.po_recs):
     for x in r.po_recs.head(2).itertuples():
         acts.append(("Purchase order", f"{x.quantity:,.0f} x {x.item_code} from {x.supplier} for {x.warehouse}", x.why.split(". ")[0] + ".", x.line_total))
@@ -152,16 +156,16 @@ if S is not None and len(S.unmet_demand):
 if acts:
     for kind, what, why, val in acts:
         with st.container(border=True):
-            c1, c2 = st.columns([5, 1])
+            c1, c2 = st.columns([7, 1])
             c1.markdown(esc(f"**{kind}: {what}**"))
-            c1.markdown(f'<p class="fp-note" style="margin:0">{esc_html(why)}</p>', unsafe_allow_html=True)
+            c1.markdown(f'<p class="fp-note" style="margin:0 0 6px 0">{esc_html(why)}</p>', unsafe_allow_html=True)
             if pd.notna(val):
                 c2.markdown(esc_html(f'<p style="text-align:right;margin:0"><b>{money(val)}</b><br><span class="fp-note">'
                             f'{"at risk" if kind == "Stockout risk" else "order value"}</span></p>'), unsafe_allow_html=True)
 else:
     st.caption("Nothing urgent: no stockout risks above the alert threshold and no orders due now.")
 
-st.subheader("4. Take it with you")
+st.subheader("Take it with you")
 c1, c2 = st.columns([1, 3])
 with c1:
     if st.button("Prepare Excel workbook"):
@@ -174,7 +178,7 @@ with c2:
     st.caption("One sheet per page: summary, PO recommendations, transfers, old open POs, risk alerts, stock levels, "
                "forecasts and accuracy, supplier scorecards, the replay and model check, data health and column mapping."
                + (" Plus the sales growth sheets." if r.sales is not None else ""))
-with st.expander("Run details"):
+with st.expander("Run details", icon=":material/info:"):
     st.write({k: f"{v:.1f} s" for k, v in r.timings.items()})
     for n in r.notes:
         st.write("•", n)
